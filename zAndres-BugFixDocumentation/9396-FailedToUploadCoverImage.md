@@ -35,7 +35,7 @@ So now somthing is wrong with the configuration its requiring the global configu
 
 ![Passing config](CaddyValid.png)
 
-After this I attempted to create the project again, but the request was still being sent to localhost:8000. So I pressed `CTRL+SHIFT+F` in VS Code and searched for http://localhost:8000, which led me to an .env file. This showed me that the web frontend was reaching the API directly through port 8000. So out of curiosity I removed the 8000 and left http://localhost which defaults to port 80.
+After this I attempted to create the project again, but the request was still being sent to localhost:8000. So I pressed `CTRL+SHIFT+F` in VS Code and searched for http://localhost:8000, which led me to an .env file. This showed me that the web frontend was reaching the API directly through port 8000. So out of curiosity I removed the 8000 and left http://localhost which defaults to port 80 for HTTP requests. Remember port 80 is also the port caddy is configured on so its listening to for reqeusts to that port.
 
 ### The Fix
 
