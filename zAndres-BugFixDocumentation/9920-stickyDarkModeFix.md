@@ -41,7 +41,15 @@ This fixed the issue as you can see below the stickynotes now are readble in dar
 
 ### My testing efforts
 
-Ultimatly testing UI could be done manually or automated. If its automated you essentially have a bot do it which is exactly the same as if a human were to test it. So I tested the functionality my self and also had my roomates have a go at it so see if they can break or find weird behavior.
+Plane has a couple tests set up already so I ran them such as:
+
+ESLint: Checkfs for quality written code (PASSED)
+Editor Build: Checks if the package will compile and build (PASSED)
+
+I created unit Tests as well which passed:
+![Passed tests](StickyTestPAss.png)
+
+I tested the functionality my self and also had my roomates have a go at it so see if they can break or find weird behavior.
 
 Tests:
 
