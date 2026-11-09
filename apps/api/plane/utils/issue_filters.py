@@ -52,60 +52,65 @@ def _filter_membership(
     return issue_filter
 
 
-# Get the 2_weeks, 3_months
 def string_date_filter(issue_filter, duration, subsequent, term, date_filter, offset):
     now = timezone.now().date()
     if term == "months":
-        if subsequent == "after":
-            if offset == "fromnow":
-                issue_filter[f"{date_filter}__gte"] = now + timedelta(days=duration * 30)
-            else:
-                issue_filter[f"{date_filter}__gte"] = now - timedelta(days=duration * 30)
-        else:
-            if offset == "fromnow":
-                issue_filter[f"{date_filter}__lte"] = now + timedelta(days=duration * 30)
-            else:
-                issue_filter[f"{date_filter}__lte"] = now - timedelta(days=duration * 30)
-    if term == "weeks":
-        if subsequent == "after":
-            if offset == "fromnow":
-                issue_filter[f"{date_filter}__gte"] = now + timedelta(weeks=duration)
-            else:
-                issue_filter[f"{date_filter}__gte"] = now - timedelta(weeks=duration)
-        else:
-            if offset == "fromnow":
-                issue_filter[f"{date_filter}__lte"] = now + timedelta(weeks=duration)
-            else:
-                issue_filter[f"{date_filter}__lte"] = now - timedelta(weeks=duration)
+        delta = timedelta(days=duration * 30)
+    elif term == "weeks":
+        delta = timedelta(weeks=duration)
+    else:
+        return
+
+    lookup = "gte" if subsequent == "after" else "lte"
+    issue_filter[f"{date_filter}__{lookup}"] = now + delta if offset == "fromnow" else now - delta
 
 
 def date_filter(issue_filter, date_term, queries):
     """
-    Handle all date filters
+    Apply date expressions in order.
     """
     for query in queries:
-        date_query = query.split(";")
-        if date_query:
-            if len(date_query) >= 2:
-                match = pattern.match(date_query[0])
-                if match:
-                    if len(date_query) == 3:
-                        digit, term = date_query[0].split("_")
-                        string_date_filter(
-                            issue_filter=issue_filter,
-                            duration=int(digit),
-                            subsequent=date_query[1],
-                            term=term,
-                            date_filter=date_term,
-                            offset=date_query[2],
-                        )
-                else:
-                    if "after" in date_query:
-                        issue_filter[f"{date_term}__gte"] = date_query[0]
-                    else:
-                        issue_filter[f"{date_term}__lte"] = date_query[0]
-            else:
-                issue_filter[f"{date_term}__contains"] = date_query[0]
+        parts = query.split(";")
+        value = parts[0]
+        if len(parts) == 1:
+            issue_filter[f"{date_term}__contains"] = value
+            continue
+
+        if not pattern.match(value):
+            lookup = "gte" if "after" in parts else "lte"
+            issue_filter[f"{date_term}__{lookup}"] = value
+            continue
+
+        if len(parts) != 3:
+            continue
+
+        duration, term = value.split("_")
+        string_date_filter(
+            issue_filter=issue_filter,
+            duration=int(duration),
+            subsequent=parts[1],
+            term=term,
+            date_filter=date_term,
+            offset=parts[2],
+        )
+
+
+def _filter_date(params, issue_filter, method, prefix, *, field, lookup, direct_body_lookup=False):
+    value = params.get(field)
+    date_term = f"{prefix}{lookup}"
+    if method == "GET":
+        value = value.split(",")
+        if "" in value:
+            return issue_filter
+    else:
+        if not value or not len(value):
+            return issue_filter
+        if direct_body_lookup:
+            issue_filter[date_term] = value
+            return issue_filter
+
+    date_filter(issue_filter, date_term, value)
+    return issue_filter
 
 
 def filter_state(params, issue_filter, method, prefix=""):
@@ -199,90 +204,27 @@ def filter_name(params, issue_filter, method, prefix=""):
 
 
 def filter_created_at(params, issue_filter, method, prefix=""):
-    if method == "GET":
-        created_ats = params.get("created_at").split(",")
-        if len(created_ats) and "" not in created_ats:
-            date_filter(
-                issue_filter=issue_filter,
-                date_term=f"{prefix}created_at__date",
-                queries=created_ats,
-            )
-    else:
-        if params.get("created_at", None) and len(params.get("created_at")):
-            date_filter(
-                issue_filter=issue_filter,
-                date_term=f"{prefix}created_at__date",
-                queries=params.get("created_at", []),
-            )
-    return issue_filter
+    return _filter_date(params, issue_filter, method, prefix, field="created_at", lookup="created_at__date")
 
 
 def filter_updated_at(params, issue_filter, method, prefix=""):
-    if method == "GET":
-        updated_ats = params.get("updated_at").split(",")
-        if len(updated_ats) and "" not in updated_ats:
-            date_filter(
-                issue_filter=issue_filter,
-                date_term=f"{prefix}updated_at__date",
-                queries=updated_ats,
-            )
-    else:
-        if params.get("updated_at", None) and len(params.get("updated_at")):
-            date_filter(
-                issue_filter=issue_filter,
-                date_term=f"{prefix}updated_at__date",
-                queries=params.get("updated_at", []),
-            )
-    return issue_filter
+    return _filter_date(params, issue_filter, method, prefix, field="updated_at", lookup="updated_at__date")
 
 
 def filter_start_date(params, issue_filter, method, prefix=""):
-    if method == "GET":
-        start_dates = params.get("start_date").split(",")
-        if len(start_dates) and "" not in start_dates:
-            date_filter(
-                issue_filter=issue_filter,
-                date_term=f"{prefix}start_date",
-                queries=start_dates,
-            )
-    else:
-        if params.get("start_date", None) and len(params.get("start_date")):
-            issue_filter[f"{prefix}start_date"] = params.get("start_date")
-    return issue_filter
+    return _filter_date(
+        params, issue_filter, method, prefix, field="start_date", lookup="start_date", direct_body_lookup=True
+    )
 
 
 def filter_target_date(params, issue_filter, method, prefix=""):
-    if method == "GET":
-        target_dates = params.get("target_date").split(",")
-        if len(target_dates) and "" not in target_dates:
-            date_filter(
-                issue_filter=issue_filter,
-                date_term=f"{prefix}target_date",
-                queries=target_dates,
-            )
-    else:
-        if params.get("target_date", None) and len(params.get("target_date")):
-            issue_filter[f"{prefix}target_date"] = params.get("target_date")
-    return issue_filter
+    return _filter_date(
+        params, issue_filter, method, prefix, field="target_date", lookup="target_date", direct_body_lookup=True
+    )
 
 
 def filter_completed_at(params, issue_filter, method, prefix=""):
-    if method == "GET":
-        completed_ats = params.get("completed_at").split(",")
-        if len(completed_ats) and "" not in completed_ats:
-            date_filter(
-                issue_filter=issue_filter,
-                date_term=f"{prefix}completed_at__date",
-                queries=completed_ats,
-            )
-    else:
-        if params.get("completed_at", None) and len(params.get("completed_at")):
-            date_filter(
-                issue_filter=issue_filter,
-                date_term=f"{prefix}completed_at__date",
-                queries=params.get("completed_at", []),
-            )
-    return issue_filter
+    return _filter_date(params, issue_filter, method, prefix, field="completed_at", lookup="completed_at__date")
 
 
 def filter_issue_state_type(params, issue_filter, method, prefix=""):
