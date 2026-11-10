@@ -31,9 +31,6 @@ from celery import shared_task
 from bs4 import BeautifulSoup
 
 
-# =========== Issue Description Html Parsing and notification Functions ======================
-
-
 def update_mentions_for_issue(issue, project, new_mentions, removed_mention):
     aggregated_issue_mentions = []
     for mention_id in new_mentions:
@@ -48,36 +45,6 @@ def update_mentions_for_issue(issue, project, new_mentions, removed_mention):
 
     IssueMention.objects.bulk_create(aggregated_issue_mentions, batch_size=100)
     IssueMention.objects.filter(issue=issue, mention__in=removed_mention).delete()
-
-
-def get_new_mentions(requested_instance, current_instance):
-    # requested_data is the newer instance of the current issue
-    # current_instance is the older instance of the current issue, saved in the database
-
-    # extract mentions from both the instance of data
-    mentions_older = extract_mentions(current_instance)
-
-    mentions_newer = extract_mentions(requested_instance)
-
-    # Getting Set Difference from mentions_newer
-    new_mentions = [mention for mention in mentions_newer if mention not in mentions_older]
-
-    return new_mentions
-
-
-# Get Removed Mention
-def get_removed_mentions(requested_instance, current_instance):
-    # requested_data is the newer instance of the current issue
-    # current_instance is the older instance of the current issue, saved in the database
-
-    # extract mentions from both the instance of data
-    mentions_older = extract_mentions(current_instance)
-    mentions_newer = extract_mentions(requested_instance)
-
-    # Getting Set Difference from mentions_newer
-    removed_mentions = [mention for mention in mentions_older if mention not in mentions_newer]
-
-    return removed_mentions
 
 
 # Adds mentions as subscribers
@@ -111,47 +78,51 @@ def extract_mentions_as_subscribers(project_id, issue_id, mentions):
     return bulk_mention_subscribers
 
 
-# Parse Issue Description & extracts mentions
-def extract_mentions(issue_instance):
+def _extract_html_mentions(html):
     try:
-        # issue_instance has to be a dictionary passed, containing the description_html and other set of activity data. # noqa: E501
-        mentions = []
-        # Convert string to dictionary
-        data = json.loads(issue_instance)
-        html = data.get("description_html")
         soup = BeautifulSoup(html, "html.parser")
         mention_tags = soup.find_all("mention-component", attrs={"entity_name": "user_mention"})
-
-        mentions = [mention_tag["entity_identifier"] for mention_tag in mention_tags]
-
+        mentions = [tag["entity_identifier"] for tag in mention_tags]
         return list(set(mentions))
     except Exception:
         return []
 
 
-# =========== Comment Parsing and notification Functions ======================
-def extract_comment_mentions(comment_value):
+def _extract_description_mentions(issue_instance):
     try:
-        mentions = []
-        soup = BeautifulSoup(comment_value, "html.parser")
-        mentions_tags = soup.find_all("mention-component", attrs={"entity_name": "user_mention"})
-        for mention_tag in mentions_tags:
-            mentions.append(mention_tag["entity_identifier"])
-        return list(set(mentions))
+        html = json.loads(issue_instance).get("description_html")
     except Exception:
         return []
+    return _extract_html_mentions(html)
 
 
-def get_new_comment_mentions(new_value, old_value):
-    mentions_newer = extract_comment_mentions(new_value)
-    if old_value is None:
-        return mentions_newer
+def _discover_description_mentions(requested_data, current_instance, project_members):
+    previous_mentions = _extract_description_mentions(current_instance)
+    current_mentions = _extract_description_mentions(requested_data)
+    added_mentions = [mention for mention in current_mentions if mention not in previous_mentions]
+    new_mentions = list(set(added_mentions) & {str(member) for member in project_members})
+    removed_mentions = [mention for mention in previous_mentions if mention not in current_mentions]
+    return current_mentions, new_mentions, removed_mentions
 
-    mentions_older = extract_comment_mentions(old_value)
-    # Getting Set Difference from mentions_newer
-    new_mentions = [mention for mention in mentions_newer if mention not in mentions_older]
 
-    return new_mentions
+def _discover_comment_mentions(activities, project_members):
+    active_member_ids = set(project_members)
+    all_mentions = []
+    new_mentions = []
+    for activity in activities:
+        if activity.get("issue_comment") is None:
+            continue
+
+        current_mentions = _extract_html_mentions(activity.get("new_value"))
+        previous_value = activity.get("old_value")
+        previous_mentions = _extract_html_mentions(previous_value) if previous_value is not None else []
+        all_mentions.extend(current_mentions)
+        new_mentions.extend(
+            mention
+            for mention in current_mentions
+            if mention not in previous_mentions and UUID(mention) in active_member_ids
+        )
+    return all_mentions, new_mentions
 
 
 def _issue_payload(issue, issue_id, *, include_project=False):
@@ -235,69 +206,32 @@ def notifications(
             bulk_notifications = []
             bulk_email_logs = []
 
-            """
-            Mention Tasks
-            1. Perform Diffing and Extract the mentions, that mention notification needs to be sent
-            2. From the latest set of mentions, extract the users which are not a subscribers & make them subscribers
-            """
-
-            # get the list of active project members
             project_members = ProjectMember.objects.filter(project_id=project_id, is_active=True).values_list(
                 "member_id", flat=True
             )
 
-            # Get new mentions from the newer instance
-            new_mentions = get_new_mentions(requested_instance=requested_data, current_instance=current_instance)
-            new_mentions = list(set(new_mentions) & {str(member) for member in project_members})
-            removed_mention = get_removed_mentions(requested_instance=requested_data, current_instance=current_instance)
-
-            comment_mentions = []
-            all_comment_mentions = []
-
-            # Get New Subscribers from the mentions of the newer instance
-            requested_mentions = extract_mentions(issue_instance=requested_data)
-            mention_subscribers = extract_mentions_as_subscribers(
-                project_id=project_id, issue_id=issue_id, mentions=requested_mentions
+            current_description_mentions, new_description_mentions, removed_description_mentions = (
+                _discover_description_mentions(requested_data, current_instance, project_members)
+            )
+            description_mention_subscribers = extract_mentions_as_subscribers(
+                project_id=project_id, issue_id=issue_id, mentions=current_description_mentions
             )
 
-            for issue_activity in issue_activities_created:
-                issue_comment = issue_activity.get("issue_comment")
-                issue_comment_new_value = issue_activity.get("new_value")
-                issue_comment_old_value = issue_activity.get("old_value")
-                if issue_comment is not None:
-                    # TODO: Maybe save the comment mentions, so that in future, we can filter out the issues based on comment mentions as well.
-
-                    all_comment_mentions = all_comment_mentions + extract_comment_mentions(issue_comment_new_value)
-
-                    new_comment_mentions = get_new_comment_mentions(
-                        old_value=issue_comment_old_value,
-                        new_value=issue_comment_new_value,
-                    )
-                    comment_mentions = comment_mentions + new_comment_mentions
-                    comment_mentions = [
-                        mention for mention in comment_mentions if UUID(mention) in set(project_members)
-                    ]
-
+            all_comment_mentions, new_comment_mentions = _discover_comment_mentions(
+                issue_activities_created, project_members
+            )
             comment_mention_subscribers = extract_mentions_as_subscribers(
                 project_id=project_id, issue_id=issue_id, mentions=all_comment_mentions
             )
-            """
-            We will not send subscription activity notification to the below mentioned user sets
-            - Those who have been newly mentioned in the issue description, we will send mention notification to them.
-            - When the activity is a comment_created and there exist a mention in the comment, 
-              then we have to send the "mention_in_comment" notification
-            - When the activity is a comment_updated and there exist a mention change, 
-              then also we have to send the "mention_in_comment" notification
-            """
 
-            # ---------------------------------------------------------------------------------------------------------
+            # Newly mentioned users receive mention notifications instead of ordinary subscriber notifications.
             issue_subscribers = list(
                 IssueSubscriber.objects.filter(
                     project_id=project_id,
                     issue_id=issue_id,
                     subscriber__in=Subquery(project_members),
                 )
-                .exclude(subscriber_id__in=list(new_mentions + comment_mentions + [actor_id]))
+                .exclude(subscriber_id__in=[*new_description_mentions, *new_comment_mentions, actor_id])
                 .values_list("subscriber", flat=True)
             )
 
@@ -418,7 +352,7 @@ def notifications(
 
             # Add Mentioned as Issue Subscribers
             IssueSubscriber.objects.bulk_create(
-                mention_subscribers + comment_mention_subscribers,
+                description_mention_subscribers + comment_mention_subscribers,
                 batch_size=100,
                 ignore_conflicts=True,
             )
@@ -427,7 +361,7 @@ def notifications(
 
             actor = User.objects.get(pk=actor_id)
 
-            for mention_id in comment_mentions:
+            for mention_id in new_comment_mentions:
                 if mention_id != actor_id:
                     preference = UserNotificationPreference.objects.get(user_id=mention_id)
                     for issue_activity in issue_activities_created:
@@ -461,7 +395,7 @@ def notifications(
                             )
                         bulk_notifications.append(notification)
 
-            for mention_id in new_mentions:
+            for mention_id in new_description_mentions:
                 if mention_id != actor_id:
                     preference = UserNotificationPreference.objects.get(user_id=mention_id)
                     if (
@@ -548,8 +482,8 @@ def notifications(
             update_mentions_for_issue(
                 issue=issue,
                 project=project,
-                new_mentions=new_mentions,
-                removed_mention=removed_mention,
+                new_mentions=new_description_mentions,
+                removed_mention=removed_description_mentions,
             )
             # Bulk create notifications
             Notification.objects.bulk_create(bulk_notifications, batch_size=100)
