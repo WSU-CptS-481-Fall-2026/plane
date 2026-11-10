@@ -206,7 +206,6 @@ def test_ignored_event_creates_no_notifications(issue):
     assert not EmailNotificationLog.objects.filter(entity_identifier=issue.id).exists()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="Description mention email uses the subscriber ID")
 @pytest.mark.parametrize("latest_field", ["description", "name"])
 def test_description_mention_email_goes_to_mentioned_user(issue, latest_field):
     subscriber = _add_member(issue, "subscriber")
