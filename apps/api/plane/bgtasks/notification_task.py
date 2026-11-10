@@ -154,6 +154,36 @@ def get_new_comment_mentions(new_value, old_value):
     return new_mentions
 
 
+def _issue_payload(issue, issue_id, *, include_project=False):
+    payload = {
+        "id": str(issue_id),
+        "name": str(issue.name),
+        "identifier": str(issue.project.identifier),
+        "sequence_id": issue.sequence_id,
+        "state_name": issue.state.name,
+        "state_group": issue.state.group,
+    }
+    if include_project:
+        payload["project_id"] = str(issue.project.id)
+        payload["workspace_slug"] = str(issue.project.workspace.slug)
+    return payload
+
+
+def _activity_payload(activity):
+    old_identifier = activity.get("old_identifier")
+    new_identifier = activity.get("new_identifier")
+    return {
+        "id": str(activity.get("id")),
+        "verb": str(activity.get("verb")),
+        "field": str(activity.get("field")),
+        "actor": str(activity.get("actor_id")),
+        "new_value": str(activity.get("new_value")),
+        "old_value": str(activity.get("old_value")),
+        "old_identifier": str(old_identifier) if old_identifier else None,
+        "new_identifier": str(new_identifier) if new_identifier else None,
+    }
+
+
 def create_mention_notification(project, notification_comment, issue, actor_id, mention_id, issue_id, activity):
     return Notification(
         workspace=project.workspace,
@@ -165,24 +195,8 @@ def create_mention_notification(project, notification_comment, issue, actor_id, 
         project=project,
         message=notification_comment,
         data={
-            "issue": {
-                "id": str(issue_id),
-                "name": str(issue.name),
-                "identifier": str(issue.project.identifier),
-                "sequence_id": issue.sequence_id,
-                "state_name": issue.state.name,
-                "state_group": issue.state.group,
-            },
-            "issue_activity": {
-                "id": str(activity.get("id")),
-                "verb": str(activity.get("verb")),
-                "field": str(activity.get("field")),
-                "actor": str(activity.get("actor_id")),
-                "new_value": str(activity.get("new_value")),
-                "old_value": str(activity.get("old_value")),
-                "old_identifier": (str(activity.get("old_identifier")) if activity.get("old_identifier") else None),
-                "new_identifier": (str(activity.get("new_identifier")) if activity.get("new_identifier") else None),
-            },
+            "issue": _issue_payload(issue, issue_id),
+            "issue_activity": _activity_payload(activity),
         },
     )
 
@@ -360,6 +374,11 @@ def notifications(
                         else None
                     )
 
+                    activity_data = _activity_payload(issue_activity)
+                    activity_data["issue_comment"] = str(
+                        issue_comment.comment_stripped if issue_comment is not None else ""
+                    )
+
                     # Create in app notification
                     bulk_notifications.append(
                         Notification(
@@ -372,35 +391,8 @@ def notifications(
                             project=project,
                             title=issue_activity.get("comment"),
                             data={
-                                "issue": {
-                                    "id": str(issue_id),
-                                    "name": str(issue.name),
-                                    "identifier": str(issue.project.identifier),
-                                    "sequence_id": issue.sequence_id,
-                                    "state_name": issue.state.name,
-                                    "state_group": issue.state.group,
-                                },
-                                "issue_activity": {
-                                    "id": str(issue_activity.get("id")),
-                                    "verb": str(issue_activity.get("verb")),
-                                    "field": str(issue_activity.get("field")),
-                                    "actor": str(issue_activity.get("actor_id")),
-                                    "new_value": str(issue_activity.get("new_value")),
-                                    "old_value": str(issue_activity.get("old_value")),
-                                    "issue_comment": str(
-                                        issue_comment.comment_stripped if issue_comment is not None else ""
-                                    ),
-                                    "old_identifier": (
-                                        str(issue_activity.get("old_identifier"))
-                                        if issue_activity.get("old_identifier")
-                                        else None
-                                    ),
-                                    "new_identifier": (
-                                        str(issue_activity.get("new_identifier"))
-                                        if issue_activity.get("new_identifier")
-                                        else None
-                                    ),
-                                },
+                                "issue": _issue_payload(issue, issue_id),
+                                "issue_activity": activity_data,
                             },
                         )
                     )
@@ -413,36 +405,9 @@ def notifications(
                                 entity_identifier=issue_id,
                                 entity_name="issue",
                                 data={
-                                    "issue": {
-                                        "id": str(issue_id),
-                                        "name": str(issue.name),
-                                        "identifier": str(issue.project.identifier),
-                                        "project_id": str(issue.project.id),
-                                        "workspace_slug": str(issue.project.workspace.slug),
-                                        "sequence_id": issue.sequence_id,
-                                        "state_name": issue.state.name,
-                                        "state_group": issue.state.group,
-                                    },
+                                    "issue": _issue_payload(issue, issue_id, include_project=True),
                                     "issue_activity": {
-                                        "id": str(issue_activity.get("id")),
-                                        "verb": str(issue_activity.get("verb")),
-                                        "field": str(issue_activity.get("field")),
-                                        "actor": str(issue_activity.get("actor_id")),
-                                        "new_value": str(issue_activity.get("new_value")),
-                                        "old_value": str(issue_activity.get("old_value")),
-                                        "issue_comment": str(
-                                            issue_comment.comment_stripped if issue_comment is not None else ""
-                                        ),
-                                        "old_identifier": (
-                                            str(issue_activity.get("old_identifier"))
-                                            if issue_activity.get("old_identifier")
-                                            else None
-                                        ),
-                                        "new_identifier": (
-                                            str(issue_activity.get("new_identifier"))
-                                            if issue_activity.get("new_identifier")
-                                            else None
-                                        ),
+                                        **activity_data,
                                         "activity_time": issue_activity.get("created_at"),
                                     },
                                 },
@@ -485,33 +450,10 @@ def notifications(
                                     entity_identifier=issue_id,
                                     entity_name="issue",
                                     data={
-                                        "issue": {
-                                            "id": str(issue_id),
-                                            "name": str(issue.name),
-                                            "identifier": str(issue.project.identifier),
-                                            "sequence_id": issue.sequence_id,
-                                            "state_name": issue.state.name,
-                                            "state_group": issue.state.group,
-                                            "project_id": str(issue.project.id),
-                                            "workspace_slug": str(issue.project.workspace.slug),
-                                        },
+                                        "issue": _issue_payload(issue, issue_id, include_project=True),
                                         "issue_activity": {
-                                            "id": str(issue_activity.get("id")),
-                                            "verb": str(issue_activity.get("verb")),
-                                            "field": str("mention"),
-                                            "actor": str(issue_activity.get("actor_id")),
-                                            "new_value": str(issue_activity.get("new_value")),
-                                            "old_value": str(issue_activity.get("old_value")),
-                                            "old_identifier": (
-                                                str(issue_activity.get("old_identifier"))
-                                                if issue_activity.get("old_identifier")
-                                                else None
-                                            ),
-                                            "new_identifier": (
-                                                str(issue_activity.get("new_identifier"))
-                                                if issue_activity.get("new_identifier")
-                                                else None
-                                            ),
+                                            **_activity_payload(issue_activity),
+                                            "field": "mention",
                                             "activity_time": issue_activity.get("created_at"),
                                         },
                                     },
@@ -527,8 +469,18 @@ def notifications(
                         and last_activity.field == "description"
                         and actor_id == str(last_activity.actor_id)
                     ):
-                        old_identifier = str(last_activity.old_identifier) if last_activity.old_identifier else None
-                        new_identifier = str(last_activity.new_identifier) if last_activity.new_identifier else None
+                        saved_activity_data = _activity_payload(
+                            {
+                                "id": last_activity.id,
+                                "verb": last_activity.verb,
+                                "field": last_activity.field,
+                                "actor_id": last_activity.actor_id,
+                                "new_value": last_activity.new_value,
+                                "old_value": last_activity.old_value,
+                                "old_identifier": last_activity.old_identifier,
+                                "new_identifier": last_activity.new_identifier,
+                            }
+                        )
                         bulk_notifications.append(
                             Notification(
                                 workspace=project.workspace,
@@ -540,26 +492,8 @@ def notifications(
                                 project=project,
                                 message=f"You have been mentioned in the issue {issue.name}",
                                 data={
-                                    "issue": {
-                                        "id": str(issue_id),
-                                        "name": str(issue.name),
-                                        "identifier": str(issue.project.identifier),
-                                        "sequence_id": issue.sequence_id,
-                                        "state_name": issue.state.name,
-                                        "state_group": issue.state.group,
-                                        "project_id": str(issue.project.id),
-                                        "workspace_slug": str(issue.project.workspace.slug),
-                                    },
-                                    "issue_activity": {
-                                        "id": str(last_activity.id),
-                                        "verb": str(last_activity.verb),
-                                        "field": str(last_activity.field),
-                                        "actor": str(last_activity.actor_id),
-                                        "new_value": str(last_activity.new_value),
-                                        "old_value": str(last_activity.old_value),
-                                        "old_identifier": old_identifier,
-                                        "new_identifier": new_identifier,
-                                    },
+                                    "issue": _issue_payload(issue, issue_id, include_project=True),
+                                    "issue_activity": saved_activity_data,
                                 },
                             )
                         )
@@ -571,23 +505,10 @@ def notifications(
                                     entity_identifier=issue_id,
                                     entity_name="issue",
                                     data={
-                                        "issue": {
-                                            "id": str(issue_id),
-                                            "name": str(issue.name),
-                                            "identifier": str(issue.project.identifier),
-                                            "sequence_id": issue.sequence_id,
-                                            "state_name": issue.state.name,
-                                            "state_group": issue.state.group,
-                                        },
+                                        "issue": _issue_payload(issue, issue_id),
                                         "issue_activity": {
-                                            "id": str(last_activity.id),
-                                            "verb": str(last_activity.verb),
+                                            **saved_activity_data,
                                             "field": "mention",
-                                            "actor": str(last_activity.actor_id),
-                                            "new_value": str(last_activity.new_value),
-                                            "old_value": str(last_activity.old_value),
-                                            "old_identifier": old_identifier,
-                                            "new_identifier": new_identifier,
                                             "activity_time": str(last_activity.created_at),
                                         },
                                     },
@@ -612,31 +533,10 @@ def notifications(
                                         entity_identifier=issue_id,
                                         entity_name="issue",
                                         data={
-                                            "issue": {
-                                                "id": str(issue_id),
-                                                "name": str(issue.name),
-                                                "identifier": str(issue.project.identifier),
-                                                "sequence_id": issue.sequence_id,
-                                                "state_name": issue.state.name,
-                                                "state_group": issue.state.group,
-                                            },
+                                            "issue": _issue_payload(issue, issue_id),
                                             "issue_activity": {
-                                                "id": str(issue_activity.get("id")),
-                                                "verb": str(issue_activity.get("verb")),
-                                                "field": str("mention"),
-                                                "actor": str(issue_activity.get("actor_id")),
-                                                "new_value": str(issue_activity.get("new_value")),
-                                                "old_value": str(issue_activity.get("old_value")),
-                                                "old_identifier": (
-                                                    str(issue_activity.get("old_identifier"))
-                                                    if issue_activity.get("old_identifier")
-                                                    else None
-                                                ),
-                                                "new_identifier": (
-                                                    str(issue_activity.get("new_identifier"))
-                                                    if issue_activity.get("new_identifier")
-                                                    else None
-                                                ),
+                                                **_activity_payload(issue_activity),
+                                                "field": "mention",
                                                 "activity_time": issue_activity.get("created_at"),
                                             },
                                         },
