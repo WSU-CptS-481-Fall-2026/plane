@@ -527,6 +527,8 @@ def notifications(
                         and last_activity.field == "description"
                         and actor_id == str(last_activity.actor_id)
                     ):
+                        old_identifier = str(last_activity.old_identifier) if last_activity.old_identifier else None
+                        new_identifier = str(last_activity.new_identifier) if last_activity.new_identifier else None
                         bulk_notifications.append(
                             Notification(
                                 workspace=project.workspace,
@@ -555,16 +557,8 @@ def notifications(
                                         "actor": str(last_activity.actor_id),
                                         "new_value": str(last_activity.new_value),
                                         "old_value": str(last_activity.old_value),
-                                        "old_identifier": (
-                                            str(issue_activity.get("old_identifier"))
-                                            if issue_activity.get("old_identifier")
-                                            else None
-                                        ),
-                                        "new_identifier": (
-                                            str(issue_activity.get("new_identifier"))
-                                            if issue_activity.get("new_identifier")
-                                            else None
-                                        ),
+                                        "old_identifier": old_identifier,
+                                        "new_identifier": new_identifier,
                                     },
                                 },
                             )
@@ -592,16 +586,8 @@ def notifications(
                                             "actor": str(last_activity.actor_id),
                                             "new_value": str(last_activity.new_value),
                                             "old_value": str(last_activity.old_value),
-                                            "old_identifier": (
-                                                str(issue_activity.get("old_identifier"))
-                                                if issue_activity.get("old_identifier")
-                                                else None
-                                            ),
-                                            "new_identifier": (
-                                                str(issue_activity.get("new_identifier"))
-                                                if issue_activity.get("new_identifier")
-                                                else None
-                                            ),
+                                            "old_identifier": old_identifier,
+                                            "new_identifier": new_identifier,
                                             "activity_time": str(last_activity.created_at),
                                         },
                                     },

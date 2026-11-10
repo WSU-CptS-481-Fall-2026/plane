@@ -222,9 +222,6 @@ def test_description_mention_email_goes_to_mentioned_user(issue, latest_field):
     assert email.receiver_id == mentioned.id
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="Reused description activity reads an unset loop variable"
-)
 def test_description_mention_notifies_when_activity_is_reused(issue):
     mentioned = _add_member(issue, "mentioned")
     _set_email_preferences(mentioned)
