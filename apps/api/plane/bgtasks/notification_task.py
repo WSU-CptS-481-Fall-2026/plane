@@ -155,7 +155,9 @@ def _activity_payload(activity):
     }
 
 
-def create_mention_notification(project, notification_comment, issue, actor_id, mention_id, issue_id, activity):
+def _mention_notification(
+    project, issue, issue_id, actor_id, mention_id, message, activity_data, *, include_project=False
+):
     return Notification(
         workspace=project.workspace,
         sender="in_app:issue_activities:mentioned",
@@ -164,12 +166,104 @@ def create_mention_notification(project, notification_comment, issue, actor_id, 
         entity_identifier=issue_id,
         entity_name="issue",
         project=project,
-        message=notification_comment,
+        message=message,
         data={
-            "issue": _issue_payload(issue, issue_id),
-            "issue_activity": _activity_payload(activity),
+            "issue": _issue_payload(issue, issue_id, include_project=include_project),
+            "issue_activity": activity_data,
         },
     )
+
+
+def _mention_email_log(issue, issue_id, actor_id, mention_id, activity_data, activity_time, *, include_project=False):
+    return EmailNotificationLog(
+        triggered_by_id=actor_id,
+        receiver_id=mention_id,
+        entity_identifier=issue_id,
+        entity_name="issue",
+        data={
+            "issue": _issue_payload(issue, issue_id, include_project=include_project),
+            "issue_activity": {**activity_data, "field": "mention", "activity_time": activity_time},
+        },
+    )
+
+
+def _build_comment_mention_notifications(project, issue, issue_id, actor_id, actor, mention_ids, activities):
+    notifications = []
+    email_logs = []
+    for mention_id in mention_ids:
+        if mention_id == actor_id:
+            continue
+
+        preference = UserNotificationPreference.objects.get(user_id=mention_id)
+        for activity in activities:
+            activity_data = _activity_payload(activity)
+            message = f"{actor.display_name} has mentioned you in a comment in issue {issue.name}"
+            notifications.append(
+                _mention_notification(project, issue, issue_id, actor_id, mention_id, message, activity_data)
+            )
+            if preference.mention:
+                email_logs.append(
+                    _mention_email_log(
+                        issue,
+                        issue_id,
+                        actor_id,
+                        mention_id,
+                        activity_data,
+                        activity.get("created_at"),
+                        include_project=True,
+                    )
+                )
+    return notifications, email_logs
+
+
+def _build_description_mention_notifications(
+    project, issue, issue_id, actor_id, mention_ids, activities, last_activity
+):
+    use_saved_activity = (
+        last_activity is not None and last_activity.field == "description" and actor_id == str(last_activity.actor_id)
+    )
+    if use_saved_activity:
+        activities = (
+            {
+                "id": last_activity.id,
+                "verb": last_activity.verb,
+                "field": last_activity.field,
+                "actor_id": last_activity.actor_id,
+                "new_value": last_activity.new_value,
+                "old_value": last_activity.old_value,
+                "old_identifier": last_activity.old_identifier,
+                "new_identifier": last_activity.new_identifier,
+                "created_at": str(last_activity.created_at),
+            },
+        )
+
+    notifications = []
+    email_logs = []
+    for mention_id in mention_ids:
+        if mention_id == actor_id:
+            continue
+
+        preference = UserNotificationPreference.objects.get(user_id=mention_id)
+        for activity in activities:
+            activity_data = _activity_payload(activity)
+            message = f"You have been mentioned in the issue {issue.name}"
+            notifications.append(
+                _mention_notification(
+                    project,
+                    issue,
+                    issue_id,
+                    actor_id,
+                    mention_id,
+                    message,
+                    activity_data,
+                    include_project=use_saved_activity,
+                )
+            )
+            if preference.mention:
+                email_logs.append(
+                    _mention_email_log(issue, issue_id, actor_id, mention_id, activity_data, activity.get("created_at"))
+                )
+    return notifications, email_logs
 
 
 @shared_task
@@ -361,122 +455,29 @@ def notifications(
 
             actor = User.objects.get(pk=actor_id)
 
-            for mention_id in new_comment_mentions:
-                if mention_id != actor_id:
-                    preference = UserNotificationPreference.objects.get(user_id=mention_id)
-                    for issue_activity in issue_activities_created:
-                        notification = create_mention_notification(
-                            project=project,
-                            issue=issue,
-                            notification_comment=f"{actor.display_name} has mentioned you in a comment in issue {issue.name}",  # noqa: E501
-                            actor_id=actor_id,
-                            mention_id=mention_id,
-                            issue_id=issue_id,
-                            activity=issue_activity,
-                        )
+            mention_notifications, mention_email_logs = _build_comment_mention_notifications(
+                project=project,
+                issue=issue,
+                issue_id=issue_id,
+                actor_id=actor_id,
+                actor=actor,
+                mention_ids=new_comment_mentions,
+                activities=issue_activities_created,
+            )
+            bulk_notifications.extend(mention_notifications)
+            bulk_email_logs.extend(mention_email_logs)
 
-                        # check for email notifications
-                        if preference.mention:
-                            bulk_email_logs.append(
-                                EmailNotificationLog(
-                                    triggered_by_id=actor_id,
-                                    receiver_id=mention_id,
-                                    entity_identifier=issue_id,
-                                    entity_name="issue",
-                                    data={
-                                        "issue": _issue_payload(issue, issue_id, include_project=True),
-                                        "issue_activity": {
-                                            **_activity_payload(issue_activity),
-                                            "field": "mention",
-                                            "activity_time": issue_activity.get("created_at"),
-                                        },
-                                    },
-                                )
-                            )
-                        bulk_notifications.append(notification)
-
-            for mention_id in new_description_mentions:
-                if mention_id != actor_id:
-                    preference = UserNotificationPreference.objects.get(user_id=mention_id)
-                    if (
-                        last_activity is not None
-                        and last_activity.field == "description"
-                        and actor_id == str(last_activity.actor_id)
-                    ):
-                        saved_activity_data = _activity_payload(
-                            {
-                                "id": last_activity.id,
-                                "verb": last_activity.verb,
-                                "field": last_activity.field,
-                                "actor_id": last_activity.actor_id,
-                                "new_value": last_activity.new_value,
-                                "old_value": last_activity.old_value,
-                                "old_identifier": last_activity.old_identifier,
-                                "new_identifier": last_activity.new_identifier,
-                            }
-                        )
-                        bulk_notifications.append(
-                            Notification(
-                                workspace=project.workspace,
-                                sender="in_app:issue_activities:mentioned",
-                                triggered_by_id=actor_id,
-                                receiver_id=mention_id,
-                                entity_identifier=issue_id,
-                                entity_name="issue",
-                                project=project,
-                                message=f"You have been mentioned in the issue {issue.name}",
-                                data={
-                                    "issue": _issue_payload(issue, issue_id, include_project=True),
-                                    "issue_activity": saved_activity_data,
-                                },
-                            )
-                        )
-                        if preference.mention:
-                            bulk_email_logs.append(
-                                EmailNotificationLog(
-                                    triggered_by_id=actor_id,
-                                    receiver_id=mention_id,
-                                    entity_identifier=issue_id,
-                                    entity_name="issue",
-                                    data={
-                                        "issue": _issue_payload(issue, issue_id),
-                                        "issue_activity": {
-                                            **saved_activity_data,
-                                            "field": "mention",
-                                            "activity_time": str(last_activity.created_at),
-                                        },
-                                    },
-                                )
-                            )
-                    else:
-                        for issue_activity in issue_activities_created:
-                            notification = create_mention_notification(
-                                project=project,
-                                issue=issue,
-                                notification_comment=f"You have been mentioned in the issue {issue.name}",
-                                actor_id=actor_id,
-                                mention_id=mention_id,
-                                issue_id=issue_id,
-                                activity=issue_activity,
-                            )
-                            if preference.mention:
-                                bulk_email_logs.append(
-                                    EmailNotificationLog(
-                                        triggered_by_id=actor_id,
-                                        receiver_id=mention_id,
-                                        entity_identifier=issue_id,
-                                        entity_name="issue",
-                                        data={
-                                            "issue": _issue_payload(issue, issue_id),
-                                            "issue_activity": {
-                                                **_activity_payload(issue_activity),
-                                                "field": "mention",
-                                                "activity_time": issue_activity.get("created_at"),
-                                            },
-                                        },
-                                    )
-                                )
-                            bulk_notifications.append(notification)
+            mention_notifications, mention_email_logs = _build_description_mention_notifications(
+                project=project,
+                issue=issue,
+                issue_id=issue_id,
+                actor_id=actor_id,
+                mention_ids=new_description_mentions,
+                activities=issue_activities_created,
+                last_activity=last_activity,
+            )
+            bulk_notifications.extend(mention_notifications)
+            bulk_email_logs.extend(mention_email_logs)
 
             # save new mentions for the particular issue and remove the mentions that has been deleted from the description # noqa: E501
             update_mentions_for_issue(
