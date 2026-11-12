@@ -14,6 +14,8 @@ returned a 500 until the UUID column was explicitly cast to text.
 """
 
 import pytest
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 
@@ -188,12 +190,24 @@ class TestAvatarUrlAnnotation:
         assert response.status_code == status.HTTP_200_OK
 
     @pytest.mark.django_db
-    def test_entity_search_user_mention(self, session_client, workspace, project):
-        response = session_client.get(
-            f"/api/workspaces/{workspace.slug}/entity-search/"
-            f"?query_type=user_mention&query=Test&project_id={project.id}"
-        )
+    def test_entity_search_user_mention(self, session_client, workspace, project, user_with_avatar_asset):
+        with CaptureQueriesContext(connection) as queries:
+            response = session_client.get(
+                f"/api/workspaces/{workspace.slug}/entity-search/"
+                f"?query_type=user_mention&query=Test&project_id={project.id}"
+            )
         assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {
+            "user_mention": [
+                {
+                    "member__id": str(user_with_avatar_asset.id),
+                    "member__display_name": user_with_avatar_asset.display_name,
+                    "member__avatar_url": f"/api/assets/v2/static/{user_with_avatar_asset.avatar_asset_id}/",
+                }
+            ]
+        }
+        print(f"project mention: {len(queries)} SQL queries")
+        assert len(queries) <= 2
 
     @pytest.mark.django_db
     def test_cycle_transfer_issues(self, session_client, workspace, project, cycle, user_with_avatar_asset):
