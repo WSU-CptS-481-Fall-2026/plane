@@ -305,6 +305,20 @@ class GlobalSearchEndpoint(BaseAPIView):
 class SearchEndpoint(BaseAPIView):
     permission_classes = (WorkspaceUserPermission,)
 
+    def _search_projects(self, query, slug, count):
+        q = Q(name__icontains=query) | Q(identifier__icontains=query) if query else Q()
+        projects = (
+            Project.objects.filter(
+                q,
+                Q(project_projectmember__member=self.request.user) | Q(network=2),
+                workspace__slug=slug,
+            )
+            .order_by("-created_at")
+            .distinct()
+            .values("name", "id", "identifier", "logo_props", "workspace__slug")[:count]
+        )
+        return list(projects)
+
     def get(self, request, slug):
         query = request.query_params.get("query", False)
         query_types = request.query_params.get("query_type", "user_mention").split(",")
@@ -366,23 +380,7 @@ class SearchEndpoint(BaseAPIView):
                     response_data["user_mention"] = list(users[:count])
 
                 elif query_type == "project":
-                    fields = ["name", "identifier"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-                    projects = (
-                        Project.objects.filter(
-                            q,
-                            Q(project_projectmember__member=self.request.user) | Q(network=2),
-                            workspace__slug=slug,
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values("name", "id", "identifier", "logo_props", "workspace__slug")[:count]
-                    )
-                    response_data["project"] = list(projects)
+                    response_data["project"] = self._search_projects(query, slug, count)
 
                 elif query_type == "issue":
                     fields = ["name", "sequence_id", "project__identifier"]
@@ -571,23 +569,7 @@ class SearchEndpoint(BaseAPIView):
                     response_data["user_mention"] = list(users)
 
                 elif query_type == "project":
-                    fields = ["name", "identifier"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-                    projects = (
-                        Project.objects.filter(
-                            q,
-                            Q(project_projectmember__member=self.request.user) | Q(network=2),
-                            workspace__slug=slug,
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values("name", "id", "identifier", "logo_props", "workspace__slug")[:count]
-                    )
-                    response_data["project"] = list(projects)
+                    response_data["project"] = self._search_projects(query, slug, count)
 
                 elif query_type == "issue":
                     fields = ["name", "sequence_id", "project__identifier"]
