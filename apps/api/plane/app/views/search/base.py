@@ -319,6 +319,90 @@ class SearchEndpoint(BaseAPIView):
         )
         return list(projects)
 
+    def _search_issues(self, query, slug, project_id, count):
+        q = Q()
+        if query:
+            q = Q(name__icontains=query) | Q(project__identifier__icontains=query)
+            for sequence_id in re.findall(r"\b\d+\b", query):
+                q |= Q(sequence_id=sequence_id)
+
+        issues = Issue.issue_objects.filter(
+            q,
+            project__project_projectmember__member=self.request.user,
+            project__project_projectmember__is_active=True,
+            workspace__slug=slug,
+        )
+        if project_id:
+            issues = issues.filter(project_id=project_id)
+
+        return list(
+            issues.order_by("-created_at")
+            .distinct()
+            .values(
+                "name",
+                "id",
+                "sequence_id",
+                "project__identifier",
+                "project_id",
+                "priority",
+                "state_id",
+                "type_id",
+            )[:count]
+        )
+
+    def _search_cycles(self, query, slug, project_id, count):
+        q = Q(name__icontains=query) if query else Q()
+        cycles = Cycle.objects.filter(
+            q,
+            project__project_projectmember__member=self.request.user,
+            project__project_projectmember__is_active=True,
+            workspace__slug=slug,
+        )
+        if project_id:
+            cycles = cycles.filter(project_id=project_id)
+
+        return list(
+            cycles.annotate(
+                status=Case(
+                    When(
+                        Q(start_date__lte=timezone.now()) & Q(end_date__gte=timezone.now()),
+                        then=Value("CURRENT"),
+                    ),
+                    When(
+                        start_date__gt=timezone.now(),
+                        then=Value("UPCOMING"),
+                    ),
+                    When(end_date__lt=timezone.now(), then=Value("COMPLETED")),
+                    When(
+                        Q(start_date__isnull=True) & Q(end_date__isnull=True),
+                        then=Value("DRAFT"),
+                    ),
+                    default=Value("DRAFT"),
+                    output_field=CharField(),
+                )
+            )
+            .order_by("-created_at")
+            .distinct()
+            .values("name", "id", "project_id", "project__identifier", "status", "workspace__slug")[:count]
+        )
+
+    def _search_modules(self, query, slug, project_id, count):
+        q = Q(name__icontains=query) if query else Q()
+        modules = Module.objects.filter(
+            q,
+            project__project_projectmember__member=self.request.user,
+            project__project_projectmember__is_active=True,
+            workspace__slug=slug,
+        )
+        if project_id:
+            modules = modules.filter(project_id=project_id)
+
+        return list(
+            modules.order_by("-created_at")
+            .distinct()
+            .values("name", "id", "project_id", "project__identifier", "status", "workspace__slug")[:count]
+        )
+
     def get(self, request, slug):
         query = request.query_params.get("query", False)
         query_types = request.query_params.get("query_type", "user_mention").split(",")
@@ -383,117 +467,13 @@ class SearchEndpoint(BaseAPIView):
                     response_data["project"] = self._search_projects(query, slug, count)
 
                 elif query_type == "issue":
-                    fields = ["name", "sequence_id", "project__identifier"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            if field == "sequence_id":
-                                sequences = re.findall(r"\b\d+\b", query)
-                                for sequence_id in sequences:
-                                    q |= Q(**{"sequence_id": sequence_id})
-                            else:
-                                q |= Q(**{f"{field}__icontains": query})
-
-                    issues = (
-                        Issue.issue_objects.filter(
-                            q,
-                            project__project_projectmember__member=self.request.user,
-                            project__project_projectmember__is_active=True,
-                            workspace__slug=slug,
-                            project_id=project_id,
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values(
-                            "name",
-                            "id",
-                            "sequence_id",
-                            "project__identifier",
-                            "project_id",
-                            "priority",
-                            "state_id",
-                            "type_id",
-                        )[:count]
-                    )
-                    response_data["issue"] = list(issues)
+                    response_data["issue"] = self._search_issues(query, slug, project_id, count)
 
                 elif query_type == "cycle":
-                    fields = ["name"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-
-                    cycles = (
-                        Cycle.objects.filter(
-                            q,
-                            project__project_projectmember__member=self.request.user,
-                            project__project_projectmember__is_active=True,
-                            workspace__slug=slug,
-                            project_id=project_id,
-                        )
-                        .annotate(
-                            status=Case(
-                                When(
-                                    Q(start_date__lte=timezone.now()) & Q(end_date__gte=timezone.now()),
-                                    then=Value("CURRENT"),
-                                ),
-                                When(
-                                    start_date__gt=timezone.now(),
-                                    then=Value("UPCOMING"),
-                                ),
-                                When(end_date__lt=timezone.now(), then=Value("COMPLETED")),
-                                When(
-                                    Q(start_date__isnull=True) & Q(end_date__isnull=True),
-                                    then=Value("DRAFT"),
-                                ),
-                                default=Value("DRAFT"),
-                                output_field=CharField(),
-                            )
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values(
-                            "name",
-                            "id",
-                            "project_id",
-                            "project__identifier",
-                            "status",
-                            "workspace__slug",
-                        )[:count]
-                    )
-                    response_data["cycle"] = list(cycles)
+                    response_data["cycle"] = self._search_cycles(query, slug, project_id, count)
 
                 elif query_type == "module":
-                    fields = ["name"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-
-                    modules = (
-                        Module.objects.filter(
-                            q,
-                            project__project_projectmember__member=self.request.user,
-                            project__project_projectmember__is_active=True,
-                            workspace__slug=slug,
-                            project_id=project_id,
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values(
-                            "name",
-                            "id",
-                            "project_id",
-                            "project__identifier",
-                            "status",
-                            "workspace__slug",
-                        )[:count]
-                    )
-                    response_data["module"] = list(modules)
+                    response_data["module"] = self._search_modules(query, slug, project_id, count)
 
                 elif query_type == "page":
                     fields = ["name"]
@@ -572,114 +552,13 @@ class SearchEndpoint(BaseAPIView):
                     response_data["project"] = self._search_projects(query, slug, count)
 
                 elif query_type == "issue":
-                    fields = ["name", "sequence_id", "project__identifier"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            if field == "sequence_id":
-                                sequences = re.findall(r"\b\d+\b", query)
-                                for sequence_id in sequences:
-                                    q |= Q(**{"sequence_id": sequence_id})
-                            else:
-                                q |= Q(**{f"{field}__icontains": query})
-
-                    issues = (
-                        Issue.issue_objects.filter(
-                            q,
-                            project__project_projectmember__member=self.request.user,
-                            project__project_projectmember__is_active=True,
-                            workspace__slug=slug,
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values(
-                            "name",
-                            "id",
-                            "sequence_id",
-                            "project__identifier",
-                            "project_id",
-                            "priority",
-                            "state_id",
-                            "type_id",
-                        )[:count]
-                    )
-                    response_data["issue"] = list(issues)
+                    response_data["issue"] = self._search_issues(query, slug, project_id, count)
 
                 elif query_type == "cycle":
-                    fields = ["name"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-
-                    cycles = (
-                        Cycle.objects.filter(
-                            q,
-                            project__project_projectmember__member=self.request.user,
-                            project__project_projectmember__is_active=True,
-                            workspace__slug=slug,
-                        )
-                        .annotate(
-                            status=Case(
-                                When(
-                                    Q(start_date__lte=timezone.now()) & Q(end_date__gte=timezone.now()),
-                                    then=Value("CURRENT"),
-                                ),
-                                When(
-                                    start_date__gt=timezone.now(),
-                                    then=Value("UPCOMING"),
-                                ),
-                                When(end_date__lt=timezone.now(), then=Value("COMPLETED")),
-                                When(
-                                    Q(start_date__isnull=True) & Q(end_date__isnull=True),
-                                    then=Value("DRAFT"),
-                                ),
-                                default=Value("DRAFT"),
-                                output_field=CharField(),
-                            )
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values(
-                            "name",
-                            "id",
-                            "project_id",
-                            "project__identifier",
-                            "status",
-                            "workspace__slug",
-                        )[:count]
-                    )
-                    response_data["cycle"] = list(cycles)
+                    response_data["cycle"] = self._search_cycles(query, slug, project_id, count)
 
                 elif query_type == "module":
-                    fields = ["name"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-
-                    modules = (
-                        Module.objects.filter(
-                            q,
-                            project__project_projectmember__member=self.request.user,
-                            project__project_projectmember__is_active=True,
-                            workspace__slug=slug,
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values(
-                            "name",
-                            "id",
-                            "project_id",
-                            "project__identifier",
-                            "status",
-                            "workspace__slug",
-                        )[:count]
-                    )
-                    response_data["module"] = list(modules)
+                    response_data["module"] = self._search_modules(query, slug, project_id, count)
 
                 elif query_type == "page":
                     fields = ["name"]
