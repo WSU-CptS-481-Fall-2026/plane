@@ -305,7 +305,7 @@ class GlobalSearchEndpoint(BaseAPIView):
 class SearchEndpoint(BaseAPIView):
     permission_classes = (WorkspaceUserPermission,)
 
-    def _search_projects(self, query, slug, count):
+    def _search_projects(self, query, slug, _project_id, count):
         q = Q(name__icontains=query) | Q(identifier__icontains=query) if query else Q()
         projects = (
             Project.objects.filter(
@@ -463,46 +463,18 @@ class SearchEndpoint(BaseAPIView):
         count = int(request.query_params.get("count", 5))
         project_id = request.query_params.get("project_id", None)
 
+        handlers = {
+            "user_mention": self._search_mentions,
+            "project": self._search_projects,
+            "issue": self._search_issues,
+            "cycle": self._search_cycles,
+            "module": self._search_modules,
+            "page": self._search_pages,
+        }
         response_data = {}
+        for query_type in query_types:
+            handler = handlers.get(query_type)
+            if handler is not None:
+                response_data[query_type] = handler(query, slug, project_id, count)
 
-        if project_id:
-            for query_type in query_types:
-                if query_type == "user_mention":
-                    response_data["user_mention"] = self._search_mentions(query, slug, project_id, count)
-
-                elif query_type == "project":
-                    response_data["project"] = self._search_projects(query, slug, count)
-
-                elif query_type == "issue":
-                    response_data["issue"] = self._search_issues(query, slug, project_id, count)
-
-                elif query_type == "cycle":
-                    response_data["cycle"] = self._search_cycles(query, slug, project_id, count)
-
-                elif query_type == "module":
-                    response_data["module"] = self._search_modules(query, slug, project_id, count)
-
-                elif query_type == "page":
-                    response_data["page"] = self._search_pages(query, slug, project_id, count)
-            return Response(response_data, status=status.HTTP_200_OK)
-
-        else:
-            for query_type in query_types:
-                if query_type == "user_mention":
-                    response_data["user_mention"] = self._search_mentions(query, slug, project_id, count)
-
-                elif query_type == "project":
-                    response_data["project"] = self._search_projects(query, slug, count)
-
-                elif query_type == "issue":
-                    response_data["issue"] = self._search_issues(query, slug, project_id, count)
-
-                elif query_type == "cycle":
-                    response_data["cycle"] = self._search_cycles(query, slug, project_id, count)
-
-                elif query_type == "module":
-                    response_data["module"] = self._search_modules(query, slug, project_id, count)
-
-                elif query_type == "page":
-                    response_data["page"] = self._search_pages(query, slug, project_id, count)
-            return Response(response_data, status=status.HTTP_200_OK)
+        return Response(response_data, status=status.HTTP_200_OK)
