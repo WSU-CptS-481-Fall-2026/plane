@@ -403,6 +403,59 @@ class SearchEndpoint(BaseAPIView):
             .values("name", "id", "project_id", "project__identifier", "status", "workspace__slug")[:count]
         )
 
+    def _search_mentions(self, query, slug, project_id, count):
+        q = Q()
+        if query:
+            q = (
+                Q(member__first_name__icontains=query)
+                | Q(member__last_name__icontains=query)
+                | Q(member__display_name__icontains=query)
+            )
+
+        filters = {"is_active": True, "workspace__slug": slug, "member__is_bot": False}
+        if project_id:
+            users = ProjectMember.objects.filter(q, project_id=project_id, **filters).distinct()
+        else:
+            users = WorkspaceMember.objects.filter(q, **filters)
+
+        return list(
+            users.annotate(
+                member__avatar_url=Case(
+                    When(
+                        member__avatar_asset__isnull=False,
+                        then=Concat(
+                            Value("/api/assets/v2/static/"),
+                            Cast("member__avatar_asset", CharField()),
+                            Value("/"),
+                        ),
+                    ),
+                    When(member__avatar_asset__isnull=True, then="member__avatar"),
+                    default=Value(None),
+                    output_field=CharField(),
+                )
+            )
+            .order_by("-created_at")
+            .values("member__avatar_url", "member__display_name", "member__id")[:count]
+        )
+
+    def _search_pages(self, query, slug, project_id, count):
+        q = Q(name__icontains=query) if query else Q()
+        scope = Q(projects__id=project_id) if project_id else Q(is_global=True)
+        pages = (
+            Page.objects.filter(
+                q,
+                scope,
+                projects__project_projectmember__member=self.request.user,
+                projects__project_projectmember__is_active=True,
+                workspace__slug=slug,
+                access=0,
+            )
+            .order_by("-created_at")
+            .distinct()
+            .values("name", "id", "logo_props", "projects__id", "workspace__slug")[:count]
+        )
+        return list(pages)
+
     def get(self, request, slug):
         query = request.query_params.get("query", False)
         query_types = request.query_params.get("query_type", "user_mention").split(",")
@@ -415,53 +468,7 @@ class SearchEndpoint(BaseAPIView):
         if project_id:
             for query_type in query_types:
                 if query_type == "user_mention":
-                    fields = [
-                        "member__first_name",
-                        "member__last_name",
-                        "member__display_name",
-                    ]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-
-                    users = (
-                        ProjectMember.objects.filter(
-                            q,
-                            is_active=True,
-                            workspace__slug=slug,
-                            member__is_bot=False,
-                            project_id=project_id,
-                        )
-                        .annotate(
-                            member__avatar_url=Case(
-                                When(
-                                    member__avatar_asset__isnull=False,
-                                    then=Concat(
-                                        Value("/api/assets/v2/static/"),
-                                        Cast("member__avatar_asset", CharField()),
-                                        Value("/"),
-                                    ),
-                                ),
-                                When(
-                                    member__avatar_asset__isnull=True,
-                                    then="member__avatar",
-                                ),
-                                default=Value(None),
-                                output_field=CharField(),
-                            )
-                        )
-                        .order_by("-created_at")
-                    )
-
-                    users = users.distinct().values(
-                        "member__avatar_url",
-                        "member__display_name",
-                        "member__id",
-                    )
-
-                    response_data["user_mention"] = list(users[:count])
+                    response_data["user_mention"] = self._search_mentions(query, slug, project_id, count)
 
                 elif query_type == "project":
                     response_data["project"] = self._search_projects(query, slug, count)
@@ -476,77 +483,13 @@ class SearchEndpoint(BaseAPIView):
                     response_data["module"] = self._search_modules(query, slug, project_id, count)
 
                 elif query_type == "page":
-                    fields = ["name"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-
-                    pages = (
-                        Page.objects.filter(
-                            q,
-                            projects__project_projectmember__member=self.request.user,
-                            projects__project_projectmember__is_active=True,
-                            projects__id=project_id,
-                            workspace__slug=slug,
-                            access=0,
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values(
-                            "name",
-                            "id",
-                            "logo_props",
-                            "projects__id",
-                            "workspace__slug",
-                        )[:count]
-                    )
-                    response_data["page"] = list(pages)
+                    response_data["page"] = self._search_pages(query, slug, project_id, count)
             return Response(response_data, status=status.HTTP_200_OK)
 
         else:
             for query_type in query_types:
                 if query_type == "user_mention":
-                    fields = [
-                        "member__first_name",
-                        "member__last_name",
-                        "member__display_name",
-                    ]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-                    users = (
-                        WorkspaceMember.objects.filter(
-                            q,
-                            is_active=True,
-                            workspace__slug=slug,
-                            member__is_bot=False,
-                        )
-                        .annotate(
-                            member__avatar_url=Case(
-                                When(
-                                    member__avatar_asset__isnull=False,
-                                    then=Concat(
-                                        Value("/api/assets/v2/static/"),
-                                        Cast("member__avatar_asset", models.CharField()),
-                                        Value("/"),
-                                    ),
-                                ),
-                                When(
-                                    member__avatar_asset__isnull=True,
-                                    then="member__avatar",
-                                ),
-                                default=Value(None),
-                                output_field=models.CharField(),
-                            )
-                        )
-                        .order_by("-created_at")
-                        .values("member__avatar_url", "member__display_name", "member__id")[:count]
-                    )
-                    response_data["user_mention"] = list(users)
+                    response_data["user_mention"] = self._search_mentions(query, slug, project_id, count)
 
                 elif query_type == "project":
                     response_data["project"] = self._search_projects(query, slug, count)
@@ -561,31 +504,5 @@ class SearchEndpoint(BaseAPIView):
                     response_data["module"] = self._search_modules(query, slug, project_id, count)
 
                 elif query_type == "page":
-                    fields = ["name"]
-                    q = Q()
-
-                    if query:
-                        for field in fields:
-                            q |= Q(**{f"{field}__icontains": query})
-
-                    pages = (
-                        Page.objects.filter(
-                            q,
-                            projects__project_projectmember__member=self.request.user,
-                            projects__project_projectmember__is_active=True,
-                            workspace__slug=slug,
-                            access=0,
-                            is_global=True,
-                        )
-                        .order_by("-created_at")
-                        .distinct()
-                        .values(
-                            "name",
-                            "id",
-                            "logo_props",
-                            "projects__id",
-                            "workspace__slug",
-                        )[:count]
-                    )
-                    response_data["page"] = list(pages)
+                    response_data["page"] = self._search_pages(query, slug, project_id, count)
             return Response(response_data, status=status.HTTP_200_OK)
