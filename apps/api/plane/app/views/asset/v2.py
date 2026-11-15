@@ -33,6 +33,7 @@ class UserAssetsV2Endpoint(BaseAPIView):
     """This endpoint is used to upload user profile images."""
     
     def invalidate_user_asset_cache(self, request):
+        """Clear cached user profile and settings data after an asset change."""
         invalidate_cache_directly(
             path="/api/users/me/",
             url_params=False,
@@ -47,6 +48,7 @@ class UserAssetsV2Endpoint(BaseAPIView):
         )
     
     def asset_delete(self, asset_id):
+        """Delete a asset mark it as deleted with timestamp"""
         asset = FileAsset.objects.filter(id=asset_id).first()
         if asset is None:
             return
@@ -56,6 +58,7 @@ class UserAssetsV2Endpoint(BaseAPIView):
         return
 
     def entity_asset_save(self, asset_id, entity_type, asset, request):
+        """Update the user's avatar or cover image and remove the previous asset."""
         if entity_type not in {
             FileAsset.EntityTypeContext.USER_AVATAR,
             FileAsset.EntityTypeContext.USER_COVER,
@@ -204,6 +207,7 @@ class WorkspaceFileAssetEndpoint(BaseAPIView):
     """This endpoint is used to upload cover images/logos etc for workspace, projects and users."""
 
     def get_entity_id_field(self, entity_type, entity_id):
+        """Map an asset entity type to its corresponding database ID field."""
         entity_fields = {
             FileAsset.EntityTypeContext.WORKSPACE_LOGO: "workspace_id",
             FileAsset.EntityTypeContext.PROJECT_COVER: "project_id",
@@ -223,6 +227,7 @@ class WorkspaceFileAssetEndpoint(BaseAPIView):
         return {field: entity_id}
 
     def invalidate_workspace_asset_cache(self, request):
+        """Clear workspace, user workspace, and instance caches after a logo change."""
         invalidate_cache_directly(
             path="/api/workspaces/",
             url_params=False,
@@ -254,6 +259,7 @@ class WorkspaceFileAssetEndpoint(BaseAPIView):
         return
 
     def update_entity_asset(self, entity, asset_id, asset_field, image_field):
+        """Replace an entity's previous image asset with the new asset."""
         previous_asset_id = getattr(entity, asset_field)
 
         if previous_asset_id:
@@ -264,6 +270,7 @@ class WorkspaceFileAssetEndpoint(BaseAPIView):
         entity.save()
         
     def entity_asset_save(self, asset_id, entity_type, asset, request):
+        """Update the workspace logo or project cover asset reference."""
         if entity_type == FileAsset.EntityTypeContext.WORKSPACE_LOGO:
             entity = Workspace.objects.filter(id=asset.workspace_id).first()
             asset_field = "logo_asset_id"
@@ -692,10 +699,12 @@ class ProjectAssetEndpoint(BaseAPIView):
 
 class ProjectBulkAssetEndpoint(BaseAPIView):
     def save_project_cover(self, asset, project):
+        """Assign the asset as the project's cover image."""
         project.cover_image_asset_id = asset.id
         project.save()
 
     def update_assets(self, assets, update_fields, ignore_integrity_error=False):
+        """Update asset records and optionally ignore database integrity errors."""
         if ignore_integrity_error:
             try:
                 assets.update(**update_fields)
@@ -706,6 +715,7 @@ class ProjectBulkAssetEndpoint(BaseAPIView):
         assets.update(**update_fields)
 
     def update_asset_entity(self, assets, entity_type, entity_id, project_id):
+        """Update asset relationships based on the asset's entity type."""
         if entity_type == FileAsset.EntityTypeContext.PROJECT_COVER:
             assets.update(project_id=project_id)
             project = Project.objects.get(id=project_id)
@@ -797,6 +807,7 @@ class DuplicateAssetEndpoint(BaseAPIView):
     throttle_classes = [AssetRateThrottle]
 
     def get_entity_id_field(self, entity_type, entity_id):
+        """Map an asset entity type to its corresponding database ID field."""
         entity_fields = {
             FileAsset.EntityTypeContext.WORKSPACE_LOGO: "workspace_id",
             FileAsset.EntityTypeContext.PROJECT_COVER: "project_id",
@@ -816,6 +827,7 @@ class DuplicateAssetEndpoint(BaseAPIView):
         return {field: entity_id}
 
     def validate_entity_type(self, entity_type):
+        """Check whether the requested asset entity type is supported."""
         if not entity_type or entity_type not in FileAsset.EntityTypeContext.values:
             return Response(
                 {"error": "Invalid entity type or entity id"},
@@ -825,6 +837,7 @@ class DuplicateAssetEndpoint(BaseAPIView):
         return None
 
     def validate_project(self, project_id, workspace):
+        """Verify that the requested project belongs to the workspace."""
         if project_id and not Project.objects.filter(
             id=project_id, workspace=workspace
         ).exists():
@@ -836,6 +849,7 @@ class DuplicateAssetEndpoint(BaseAPIView):
         return None
 
     def get_original_asset(self, asset_id, workspace):
+        """Retrieve an uploaded original asset from the specified workspace."""
         return FileAsset.objects.filter(
             id=asset_id,
             is_uploaded=True,
@@ -843,6 +857,7 @@ class DuplicateAssetEndpoint(BaseAPIView):
         ).first()
 
     def duplicate_asset(self, request, workspace, original_asset, entity_type, entity_id, project_id):
+        """Create a duplicate asset record and copy the original S3 object."""
         sanitized_name = sanitize_filename(original_asset.attributes.get("name")) or "unnamed"
         destination_key = f"{workspace.id}/{uuid.uuid4().hex}-{sanitized_name}"
 
@@ -960,3 +975,4 @@ class ProjectAssetDownloadEndpoint(BaseAPIView):
         )
 
         return HttpResponseRedirect(signed_url)
+
