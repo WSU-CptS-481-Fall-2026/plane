@@ -771,73 +771,69 @@ class AssetCheckEndpoint(BaseAPIView):
         return Response({"exists": asset}, status=status.HTTP_200_OK)
 
 
+
+
 class DuplicateAssetEndpoint(BaseAPIView):
     throttle_classes = [AssetRateThrottle]
 
     def get_entity_id_field(self, entity_type, entity_id):
-        # Workspace Logo
         if entity_type == FileAsset.EntityTypeContext.WORKSPACE_LOGO:
             return {"workspace_id": entity_id}
 
-        # Project Cover
         if entity_type == FileAsset.EntityTypeContext.PROJECT_COVER:
             return {"project_id": entity_id}
 
-        # User Avatar and Cover
         if entity_type in [
             FileAsset.EntityTypeContext.USER_AVATAR,
             FileAsset.EntityTypeContext.USER_COVER,
         ]:
             return {"user_id": entity_id}
 
-        # Issue Attachment and Description
         if entity_type in [
             FileAsset.EntityTypeContext.ISSUE_ATTACHMENT,
             FileAsset.EntityTypeContext.ISSUE_DESCRIPTION,
         ]:
             return {"issue_id": entity_id}
 
-        # Page Description
         if entity_type == FileAsset.EntityTypeContext.PAGE_DESCRIPTION:
             return {"page_id": entity_id}
 
-        # Comment Description
         if entity_type == FileAsset.EntityTypeContext.COMMENT_DESCRIPTION:
             return {"comment_id": entity_id}
 
         return {}
 
-    @allow_permission([ROLE.ADMIN, ROLE.MEMBER, ROLE.GUEST], level="WORKSPACE")
-    def post(self, request, slug, asset_id):
-        project_id = request.data.get("project_id", None)
-        entity_id = request.data.get("entity_id", None)
-        entity_type = request.data.get("entity_type", None)
-
+    def validate_entity_type(self, entity_type):
         if not entity_type or entity_type not in FileAsset.EntityTypeContext.values:
             return Response(
                 {"error": "Invalid entity type or entity id"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        workspace = Workspace.objects.get(slug=slug)
-        if project_id:
-            # check if project exists in the workspace
-            if not Project.objects.filter(id=project_id, workspace=workspace).exists():
-                return Response({"error": "Project not found"}, status=status.HTTP_404_NOT_FOUND)
+        return None
 
-        storage = S3Storage(request=request)
-        # Restrict the source asset to the same destination workspace to prevent cross-workspace asset copying
-        original_asset = FileAsset.objects.filter(
+    def validate_project(self, project_id, workspace):
+        if project_id and not Project.objects.filter(
+            id=project_id, workspace=workspace
+        ).exists():
+            return Response(
+                {"error": "Project not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return None
+
+    def get_original_asset(self, asset_id, workspace):
+        return FileAsset.objects.filter(
             id=asset_id,
             is_uploaded=True,
             workspace=workspace,
         ).first()
 
-        if not original_asset:
-            return Response({"error": "Asset not found"}, status=status.HTTP_404_NOT_FOUND)
-
+    def duplicate_asset(self, request, workspace, original_asset, entity_type, entity_id, project_id):
         sanitized_name = sanitize_filename(original_asset.attributes.get("name")) or "unnamed"
         destination_key = f"{workspace.id}/{uuid.uuid4().hex}-{sanitized_name}"
+
         duplicated_asset = FileAsset.objects.create(
             attributes={
                 "name": original_asset.attributes.get("name"),
@@ -853,11 +849,50 @@ class DuplicateAssetEndpoint(BaseAPIView):
             storage_metadata=original_asset.storage_metadata,
             **self.get_entity_id_field(entity_type=entity_type, entity_id=entity_id),
         )
+
+        storage = S3Storage(request=request)
         storage.copy_object(original_asset.asset, destination_key)
-        # Update the is_uploaded field for all newly created assets
+
         FileAsset.objects.filter(id=duplicated_asset.id).update(is_uploaded=True)
 
-        return Response({"asset_id": str(duplicated_asset.id)}, status=status.HTTP_200_OK)
+        return duplicated_asset
+
+    @allow_permission([ROLE.ADMIN, ROLE.MEMBER, ROLE.GUEST], level="WORKSPACE")
+    def post(self, request, slug, asset_id):
+        project_id = request.data.get("project_id", None)
+        entity_id = request.data.get("entity_id", None)
+        entity_type = request.data.get("entity_type", None)
+
+        entity_type_response = self.validate_entity_type(entity_type)
+        if entity_type_response:
+            return entity_type_response
+
+        workspace = Workspace.objects.get(slug=slug)
+
+        project_response = self.validate_project(project_id, workspace)
+        if project_response:
+            return project_response
+
+        original_asset = self.get_original_asset(asset_id, workspace)
+        if not original_asset:
+            return Response(
+                {"error": "Asset not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        duplicated_asset = self.duplicate_asset(
+            request,
+            workspace,
+            original_asset,
+            entity_type,
+            entity_id,
+            project_id,
+        )
+
+        return Response(
+            {"asset_id": str(duplicated_asset.id)},
+            status=status.HTTP_200_OK,
+        )
 
 
 class WorkspaceAssetDownloadEndpoint(BaseAPIView):
