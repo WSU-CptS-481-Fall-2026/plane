@@ -13,6 +13,7 @@ raises ``FieldError: Expression contains mixed types``. Every endpoint below
 returned a 500 until the UUID column was explicitly cast to text.
 """
 
+from plane.db.models import AnalyticView
 import pytest
 from django.utils import timezone
 from rest_framework import status
@@ -211,3 +212,219 @@ class TestAvatarUrlAnnotation:
             format="json",
         )
         assert response.status_code == status.HTTP_200_OK
+
+@pytest.mark.contract
+class TestProjectStatsEndpoint:
+    
+    # Tests that all five project statistics are returned with the correct counts.
+    @pytest.mark.django_db
+    def test_project_stats_returns_all_statistics(
+        self, session_client, workspace, project, assigned_issue, module, cycle
+    ):
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/project-stats/"
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+
+        project_stats = next(
+            item for item in response.data if str(item["id"]) == str(project.id)
+        )
+
+        assert project_stats["total_issues"] == 1
+        assert project_stats["completed_issues"] == 0
+        assert project_stats["total_members"] == 1
+        assert project_stats["total_cycles"] == 1
+        assert project_stats["total_modules"] == 1
+
+    # Tests that only the requested project statistics are returned.        
+    @pytest.mark.django_db
+    def test_project_stats_returns_only_requested_fields(
+        self, session_client, workspace, project, assigned_issue
+    ):
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/project-stats/?fields=total_issues,total_members"
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+
+        project_stats = response.data[0]
+
+        assert project_stats["total_issues"] == 1
+        assert project_stats["total_members"] == 1
+        assert "completed_issues" not in project_stats
+        assert "total_cycles" not in project_stats
+        assert "total_modules" not in project_stats
+    
+    # Tests that project statistics can be filtered by project IDs.
+    @pytest.mark.django_db
+    def test_project_stats_filters_by_project_ids(
+        self, session_client, workspace, project
+    ):
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/project-stats/?project_ids={project.id}"
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert len(response.data) == 1
+        assert str(response.data[0]["id"]) == str(project.id)
+        
+@pytest.mark.contract
+class TestAnalyticsValidation:
+    
+    # Tests that analytics returns an error when required dimensions are missing.
+    @pytest.mark.django_db
+    def test_analytics_returns_error_for_missing_dimensions(
+        self, session_client, workspace
+    ):
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/analytics/"
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data["error"] == (
+            "x-axis and y-axis dimensions are required and the values should be valid"
+        )
+    
+    # Tests that analytics rejects a segment matching the x-axis dimension.
+    @pytest.mark.django_db
+    def test_analytics_returns_error_for_matching_segment_and_x_axis(
+        self, session_client, workspace
+    ):
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/analytics/"
+            "?x_axis=state_id&y_axis=issue_count&segment=state_id"
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data["error"] == (
+            "Both segment and x axis cannot be same and segment should be valid"
+        )
+        
+    # Tests that analytics successfully returns issue totals, distribution, and state details.   
+    @pytest.mark.django_db
+    def test_analytics_returns_successful_response(
+        self, session_client, workspace, assigned_issue
+    ):
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/analytics/"
+            "?x_axis=state_id&y_axis=issue_count"
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["total"] == 1
+        assert "distribution" in response.data
+        assert "extras" in response.data
+        assert response.data["extras"]["state_details"]
+  
+    # Tests that analytics returns cycle details for the selected cycle dimension.         
+    @pytest.mark.django_db
+    def test_analytics_returns_cycle_details(
+        self, session_client, workspace, assigned_issue, cycle
+    ):
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/analytics/"
+            "?x_axis=issue_cycle__cycle_id&y_axis=issue_count"
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["extras"]["cycle_details"]
+    
+    # Tests that analytics returns module details for the selected module dimension.    
+    @pytest.mark.django_db
+    def test_analytics_returns_module_details(
+        self, session_client, workspace, assigned_issue, module
+    ):
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/analytics/"
+            "?x_axis=issue_module__module_id&y_axis=issue_count"
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["extras"]["module_details"]
+    
+    # Tests that analytics returns assignee details for the selected assignee dimension.
+    @pytest.mark.django_db
+    def test_analytics_returns_assignee_details(
+        self, session_client, workspace, assigned_issue
+    ):
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/analytics/"
+            "?x_axis=assignees__id&y_axis=issue_count"
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["extras"]["assignee_details"]
+        
+    # Tests that analytics export rejects requests with missing dimensions.
+    @pytest.mark.django_db
+    def test_export_analytics_returns_error_for_missing_dimensions(
+        self, session_client, workspace
+    ):
+        response = session_client.post(
+            f"/api/workspaces/{workspace.slug}/export-analytics/",
+            data={},
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data["error"] == (
+            "x-axis and y-axis dimensions are required and the values should be valid"
+        )
+    
+    # Tests that analytics export successfully queues an export request.    
+    @pytest.mark.django_db
+    def test_export_analytics_success(
+        self, session_client, workspace
+    ):
+        response = session_client.post(
+            f"/api/workspaces/{workspace.slug}/export-analytics/",
+            data={
+                "x_axis": "state_id",
+                "y_axis": "issue_count",
+            },
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert "Once the export is ready" in response.data["message"]
+
+    # Tests that a saved analytics view returns its issue total and distribution.
+    @pytest.mark.django_db
+    def test_saved_analytics_returns_successful_response(
+        self, session_client, workspace, assigned_issue
+    ):
+        analytic_view = AnalyticView.objects.create(
+            workspace=workspace,
+            name="Test Analytics",
+            query={"workspace__slug": workspace.slug},
+            query_dict={
+                "x_axis": "state_id",
+                "y_axis": "issue_count",
+            },
+        )
+
+        response = session_client.get(
+            f"/api/workspaces/{workspace.slug}/saved-analytic-view/{analytic_view.id}/"
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["total"] == 1
+        assert "distribution" in response.data
+    
+    # Tests that creating an analytics view assigns it to the correct workspace.    
+    @pytest.mark.django_db
+    def test_analytic_view_creation_assigns_workspace(
+        self, session_client, workspace
+    ):
+        response = session_client.post(
+            f"/api/workspaces/{workspace.slug}/analytic-view/",
+            data={
+                "name": "Test Analytics",
+                "query_dict": {},
+            },
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_201_CREATED
+        assert str(response.data["workspace"]) == str(workspace.id)

@@ -433,3 +433,4 @@ class ProjectStatsEndpoint(BaseAPIView):
         # Return the requested project statistics
         projects = projects.annotate(**annotations).values("id", *requested_fields)
         return Response(projects, status=status.HTTP_200_OK)
+
