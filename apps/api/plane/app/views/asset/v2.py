@@ -11,6 +11,7 @@ from django.http import HttpResponseRedirect
 from django.utils import timezone
 from django.db import IntegrityError
 from django.db.models import Q
+from httpcore import request
 
 # Third party imports
 from rest_framework import status
@@ -30,7 +31,21 @@ from plane.throttles.asset import AssetRateThrottle
 
 class UserAssetsV2Endpoint(BaseAPIView):
     """This endpoint is used to upload user profile images."""
-
+    
+    def invalidate_user_asset_cache(self, request):
+        invalidate_cache_directly(
+            path="/api/users/me/",
+            url_params=False,
+            user=True,
+            request=request,
+        )
+        invalidate_cache_directly(
+            path="/api/users/me/settings/",
+            url_params=False,
+            user=True,
+            request=request,
+        )
+    
     def asset_delete(self, asset_id):
         asset = FileAsset.objects.filter(id=asset_id).first()
         if asset is None:
@@ -41,43 +56,28 @@ class UserAssetsV2Endpoint(BaseAPIView):
         return
 
     def entity_asset_save(self, asset_id, entity_type, asset, request):
-        # User Avatar
+        if entity_type not in {
+            FileAsset.EntityTypeContext.USER_AVATAR,
+            FileAsset.EntityTypeContext.USER_COVER,
+        }:
+            return
+
+        user = User.objects.get(id=asset.user_id)
+
         if entity_type == FileAsset.EntityTypeContext.USER_AVATAR:
-            user = User.objects.get(id=asset.user_id)
             user.avatar = ""
-            # Delete the previous avatar
-            if user.avatar_asset_id:
-                self.asset_delete(user.avatar_asset_id)
-            # Save the new avatar
+            previous_asset_id = user.avatar_asset_id
             user.avatar_asset_id = asset_id
-            user.save()
-            invalidate_cache_directly(path="/api/users/me/", url_params=False, user=True, request=request)
-            invalidate_cache_directly(
-                path="/api/users/me/settings/",
-                url_params=False,
-                user=True,
-                request=request,
-            )
-            return
-        # User Cover
-        if entity_type == FileAsset.EntityTypeContext.USER_COVER:
-            user = User.objects.get(id=asset.user_id)
+        else:
             user.cover_image = None
-            # Delete the previous cover image
-            if user.cover_image_asset_id:
-                self.asset_delete(user.cover_image_asset_id)
-            # Save the new cover image
+            previous_asset_id = user.cover_image_asset_id
             user.cover_image_asset_id = asset_id
-            user.save()
-            invalidate_cache_directly(path="/api/users/me/", url_params=False, user=True, request=request)
-            invalidate_cache_directly(
-                path="/api/users/me/settings/",
-                url_params=False,
-                user=True,
-                request=request,
-            )
-            return
-        return
+
+        if previous_asset_id:
+            self.asset_delete(previous_asset_id)
+
+        user.save()
+        self.invalidate_user_asset_cache(request)
 
     def entity_asset_delete(self, entity_type, asset, request):
         # User Avatar
@@ -222,6 +222,26 @@ class WorkspaceFileAssetEndpoint(BaseAPIView):
 
         return {field: entity_id}
 
+    def invalidate_workspace_asset_cache(self, request):
+        invalidate_cache_directly(
+            path="/api/workspaces/",
+            url_params=False,
+            user=False,
+            request=request,
+        )
+        invalidate_cache_directly(
+            path="/api/users/me/workspaces/",
+            url_params=False,
+            user=True,
+            request=request,
+        )
+        invalidate_cache_directly(
+            path="/api/instances/",
+            url_params=False,
+            user=False,
+            request=request,
+        )
+        
     def asset_delete(self, asset_id):
         asset = FileAsset.objects.filter(id=asset_id).first()
         # Check if the asset exists
@@ -233,44 +253,39 @@ class WorkspaceFileAssetEndpoint(BaseAPIView):
         asset.save(update_fields=["is_deleted", "deleted_at"])
         return
 
-    def entity_asset_save(self, asset_id, entity_type, asset, request):
-        # Workspace Logo
-        if entity_type == FileAsset.EntityTypeContext.WORKSPACE_LOGO:
-            workspace = Workspace.objects.filter(id=asset.workspace_id).first()
-            if workspace is None:
-                return
-            # Delete the previous logo
-            if workspace.logo_asset_id:
-                self.asset_delete(workspace.logo_asset_id)
-            # Save the new logo
-            workspace.logo = ""
-            workspace.logo_asset_id = asset_id
-            workspace.save()
-            invalidate_cache_directly(path="/api/workspaces/", url_params=False, user=False, request=request)
-            invalidate_cache_directly(
-                path="/api/users/me/workspaces/",
-                url_params=False,
-                user=True,
-                request=request,
-            )
-            invalidate_cache_directly(path="/api/instances/", url_params=False, user=False, request=request)
-            return
+    def update_entity_asset(self, entity, asset_id, asset_field, image_field):
+        previous_asset_id = getattr(entity, asset_field)
 
-        # Project Cover
+        if previous_asset_id:
+            self.asset_delete(previous_asset_id)
+
+        setattr(entity, image_field, "")
+        setattr(entity, asset_field, asset_id)
+        entity.save()
+        
+    def entity_asset_save(self, asset_id, entity_type, asset, request):
+        if entity_type == FileAsset.EntityTypeContext.WORKSPACE_LOGO:
+            entity = Workspace.objects.filter(id=asset.workspace_id).first()
+            asset_field = "logo_asset_id"
+            image_field = "logo"
+            should_invalidate_cache = True
+
         elif entity_type == FileAsset.EntityTypeContext.PROJECT_COVER:
-            project = Project.objects.filter(id=asset.project_id).first()
-            if project is None:
-                return
-            # Delete the previous cover image
-            if project.cover_image_asset_id:
-                self.asset_delete(project.cover_image_asset_id)
-            # Save the new cover image
-            project.cover_image = ""
-            project.cover_image_asset_id = asset_id
-            project.save()
-            return
+            entity = Project.objects.filter(id=asset.project_id).first()
+            asset_field = "cover_image_asset_id"
+            image_field = "cover_image"
+            should_invalidate_cache = False
+
         else:
             return
+
+        if entity is None:
+            return
+
+        self.update_entity_asset(entity, asset_id, asset_field, image_field)
+
+        if should_invalidate_cache:
+            self.invalidate_workspace_asset_cache(request)
 
     def entity_asset_delete(self, entity_type, asset, request):
         # Workspace Logo
