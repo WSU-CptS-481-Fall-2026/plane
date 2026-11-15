@@ -50,6 +50,8 @@ def validate_analytics_dimensions(x_axis, y_axis, segment):
     return None
 
 
+
+
 class AnalyticsEndpoint(BaseAPIView):
     @allow_permission([ROLE.ADMIN, ROLE.MEMBER], level="WORKSPACE")
     def get(self, request, slug):
@@ -60,6 +62,8 @@ class AnalyticsEndpoint(BaseAPIView):
         validation_error = validate_analytics_dimensions(x_axis, y_axis, segment)
         if validation_error:
             return validation_error
+
+        selected_dimensions = {x_axis, segment}
 
         # Additional filters that need to be applied
         filters = issue_filters(request.GET, "GET")
@@ -73,17 +77,28 @@ class AnalyticsEndpoint(BaseAPIView):
         # Build the graph payload
         distribution = build_graph_plot(queryset=queryset, x_axis=x_axis, y_axis=y_axis, segment=segment)
 
+        extras = self.get_analytics_extras(queryset, selected_dimensions, slug, filters)
+
+        return Response(
+            {
+                "total": total_issues,
+                "distribution": distribution,
+                "extras": extras,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def get_analytics_extras(self, queryset, selected_dimensions, slug, filters):
         state_details = {}
-        if x_axis in ["state_id"] or segment in ["state_id"]:
+        if "state_id" in selected_dimensions:
             state_details = (
-                Issue.issue_objects.filter(workspace__slug=slug, **filters)
-                .distinct("state_id")
+                queryset.distinct("state_id")
                 .order_by("state_id")
                 .values("state_id", "state__name", "state__color")
             )
 
         label_details = {}
-        if x_axis in ["labels__id"] or segment in ["labels__id"]:
+        if "labels__id" in selected_dimensions:
             label_details = (
                 Issue.objects.filter(
                     workspace__slug=slug,
@@ -97,12 +112,10 @@ class AnalyticsEndpoint(BaseAPIView):
             )
 
         assignee_details = {}
-        if x_axis in ["assignees__id"] or segment in ["assignees__id"]:
+        if "assignees__id" in selected_dimensions:
             assignee_details = (
-                Issue.issue_objects.filter(
-                    Q(Q(assignees__avatar__isnull=False) | Q(assignees__avatar_asset__isnull=False)),
-                    workspace__slug=slug,
-                    **filters,
+                queryset.filter(
+                    Q(Q(assignees__avatar__isnull=False) | Q(assignees__avatar_asset__isnull=False))
                 )
                 .annotate(
                     assignees__avatar_url=Case(
@@ -136,11 +149,9 @@ class AnalyticsEndpoint(BaseAPIView):
             )
 
         cycle_details = {}
-        if x_axis in ["issue_cycle__cycle_id"] or segment in ["issue_cycle__cycle_id"]:
+        if "issue_cycle__cycle_id" in selected_dimensions:
             cycle_details = (
-                Issue.issue_objects.filter(
-                    workspace__slug=slug,
-                    **filters,
+                queryset.filter(
                     issue_cycle__cycle_id__isnull=False,
                     issue_cycle__deleted_at__isnull=True,
                 )
@@ -150,11 +161,9 @@ class AnalyticsEndpoint(BaseAPIView):
             )
 
         module_details = {}
-        if x_axis in ["issue_module__module_id"] or segment in ["issue_module__module_id"]:
+        if "issue_module__module_id" in selected_dimensions:
             module_details = (
-                Issue.issue_objects.filter(
-                    workspace__slug=slug,
-                    **filters,
+                queryset.filter(
                     issue_module__module_id__isnull=False,
                     issue_module__deleted_at__isnull=True,
                 )
@@ -163,20 +172,14 @@ class AnalyticsEndpoint(BaseAPIView):
                 .values("issue_module__module_id", "issue_module__module__name")
             )
 
-        return Response(
-            {
-                "total": total_issues,
-                "distribution": distribution,
-                "extras": {
-                    "state_details": state_details,
-                    "assignee_details": assignee_details,
-                    "label_details": label_details,
-                    "cycle_details": cycle_details,
-                    "module_details": module_details,
-                },
-            },
-            status=status.HTTP_200_OK,
-        )
+        return {
+            "state_details": state_details,
+            "assignee_details": assignee_details,
+            "label_details": label_details,
+            "cycle_details": cycle_details,
+            "module_details": module_details,
+        }
+
 
 
 class AnalyticViewViewset(BaseViewSet):
