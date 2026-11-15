@@ -377,10 +377,15 @@ class DefaultAnalyticsEndpoint(BaseAPIView):
             status=status.HTTP_200_OK,
         )
 
+def build_count_subquery(queryset):
+    # Build a count query for the related records
+    return queryset.order_by().annotate(count=Func(F("id"), function="Count")).values("count")
+
 
 class ProjectStatsEndpoint(BaseAPIView):
     @allow_permission([ROLE.ADMIN, ROLE.MEMBER, ROLE.GUEST], level="WORKSPACE")
     def get(self, request, slug):
+        # Get the requested fields and project IDs
         fields = request.GET.get("fields", "").split(",")
         project_ids = request.GET.get("project_ids", "")
 
@@ -396,50 +401,35 @@ class ProjectStatsEndpoint(BaseAPIView):
         if not requested_fields:
             requested_fields = valid_fields
 
+        # Get the projects in the workspace
         projects = Project.objects.filter(workspace__slug=slug)
         if project_ids:
             projects = projects.filter(id__in=project_ids.split(","))
 
-        annotations = {}
-        if "total_issues" in requested_fields:
-            annotations["total_issues"] = (
-                Issue.issue_objects.filter(project_id=OuterRef("pk"))
-                .order_by()
-                .annotate(count=Func(F("id"), function="Count"))
-                .values("count")
-            )
+        # Define the queries for each project statistic
+        count_queries = {
+            "total_issues": lambda: Issue.issue_objects.filter(
+                project_id=OuterRef("pk")
+            ),
+            "completed_issues": lambda: Issue.issue_objects.filter(
+                project_id=OuterRef("pk"),
+                state__group__in=["completed", "cancelled"],
+            ),
+            "total_cycles": lambda: Cycle.objects.filter(project_id=OuterRef("id")),
+            "total_modules": lambda: Module.objects.filter(project_id=OuterRef("id")),
+            "total_members": lambda: ProjectMember.objects.filter(
+                project_id=OuterRef("id"),
+                member__is_bot=False,
+                is_active=True,
+            ),
+        }
 
-        if "completed_issues" in requested_fields:
-            annotations["completed_issues"] = (
-                Issue.issue_objects.filter(project_id=OuterRef("pk"), state__group__in=["completed", "cancelled"])
-                .order_by()
-                .annotate(count=Func(F("id"), function="Count"))
-                .values("count")
-            )
+        # Build count queries for the requested fields
+        annotations = {
+            field: build_count_subquery(count_queries[field]())
+            for field in requested_fields
+        }
 
-        if "total_cycles" in requested_fields:
-            annotations["total_cycles"] = (
-                Cycle.objects.filter(project_id=OuterRef("id"))
-                .order_by()
-                .annotate(count=Func(F("id"), function="Count"))
-                .values("count")
-            )
-
-        if "total_modules" in requested_fields:
-            annotations["total_modules"] = (
-                Module.objects.filter(project_id=OuterRef("id"))
-                .order_by()
-                .annotate(count=Func(F("id"), function="Count"))
-                .values("count")
-            )
-
-        if "total_members" in requested_fields:
-            annotations["total_members"] = (
-                ProjectMember.objects.filter(project_id=OuterRef("id"), member__is_bot=False, is_active=True)
-                .order_by()
-                .annotate(count=Func(F("id"), function="Count"))
-                .values("count")
-            )
-
+        # Return the requested project statistics
         projects = projects.annotate(**annotations).values("id", *requested_fields)
         return Response(projects, status=status.HTTP_200_OK)
