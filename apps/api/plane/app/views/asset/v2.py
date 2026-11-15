@@ -696,38 +696,64 @@ class ProjectAssetEndpoint(BaseAPIView):
 
 
 
+
 class ProjectBulkAssetEndpoint(BaseAPIView):
-    def save_project_cover(self, asset, project_id):
-        project = Project.objects.get(id=project_id)
+    def save_project_cover(self, asset, project):
         project.cover_image_asset_id = asset.id
         project.save()
+
+    def update_assets(self, assets, update_fields, ignore_integrity_error=False):
+        if ignore_integrity_error:
+            try:
+                assets.update(**update_fields)
+            except IntegrityError:
+                pass
+            return
+
+        assets.update(**update_fields)
 
     def update_asset_entity(self, assets, entity_type, entity_id, project_id):
         if entity_type == FileAsset.EntityTypeContext.PROJECT_COVER:
             assets.update(project_id=project_id)
+            project = Project.objects.get(id=project_id)
+
             for asset in assets:
-                self.save_project_cover(asset, project_id)
+                self.save_project_cover(asset, project)
 
-        elif entity_type == FileAsset.EntityTypeContext.ISSUE_DESCRIPTION:
-            try:
-                assets.update(issue_id=entity_id, project_id=project_id)
-            except IntegrityError:
-                pass
+            return
 
-        elif entity_type == FileAsset.EntityTypeContext.COMMENT_DESCRIPTION:
-            try:
-                assets.update(comment_id=entity_id)
-            except IntegrityError:
-                pass
+        entity_updates = {
+            FileAsset.EntityTypeContext.ISSUE_DESCRIPTION: {
+                "issue_id": entity_id,
+                "project_id": project_id,
+            },
+            FileAsset.EntityTypeContext.COMMENT_DESCRIPTION: {
+                "comment_id": entity_id,
+            },
+            FileAsset.EntityTypeContext.PAGE_DESCRIPTION: {
+                "page_id": entity_id,
+            },
+            FileAsset.EntityTypeContext.DRAFT_ISSUE_DESCRIPTION: {
+                "draft_issue_id": entity_id,
+            },
+        }
 
-        elif entity_type == FileAsset.EntityTypeContext.PAGE_DESCRIPTION:
-            assets.update(page_id=entity_id)
+        update_fields = entity_updates.get(entity_type)
 
-        elif entity_type == FileAsset.EntityTypeContext.DRAFT_ISSUE_DESCRIPTION:
-            try:
-                assets.update(draft_issue_id=entity_id)
-            except IntegrityError:
-                pass
+        if update_fields is None:
+            return
+
+        ignore_integrity_error = entity_type in {
+            FileAsset.EntityTypeContext.ISSUE_DESCRIPTION,
+            FileAsset.EntityTypeContext.COMMENT_DESCRIPTION,
+            FileAsset.EntityTypeContext.DRAFT_ISSUE_DESCRIPTION,
+        }
+
+        self.update_assets(
+            assets,
+            update_fields,
+            ignore_integrity_error,
+        )
 
     @allow_permission([ROLE.ADMIN, ROLE.MEMBER, ROLE.GUEST])
     def post(self, request, slug, project_id, entity_id):
@@ -761,6 +787,7 @@ class ProjectBulkAssetEndpoint(BaseAPIView):
         )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class AssetCheckEndpoint(BaseAPIView):
     """Endpoint to check if an asset exists."""
