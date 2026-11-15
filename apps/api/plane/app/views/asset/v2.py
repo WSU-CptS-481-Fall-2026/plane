@@ -695,35 +695,56 @@ class ProjectAssetEndpoint(BaseAPIView):
         return HttpResponseRedirect(signed_url)
 
 
+
 class ProjectBulkAssetEndpoint(BaseAPIView):
     def save_project_cover(self, asset, project_id):
         project = Project.objects.get(id=project_id)
         project.cover_image_asset_id = asset.id
         project.save()
 
+    def update_asset_entity(self, assets, entity_type, entity_id, project_id):
+        if entity_type == FileAsset.EntityTypeContext.PROJECT_COVER:
+            assets.update(project_id=project_id)
+            for asset in assets:
+                self.save_project_cover(asset, project_id)
+
+        elif entity_type == FileAsset.EntityTypeContext.ISSUE_DESCRIPTION:
+            try:
+                assets.update(issue_id=entity_id, project_id=project_id)
+            except IntegrityError:
+                pass
+
+        elif entity_type == FileAsset.EntityTypeContext.COMMENT_DESCRIPTION:
+            try:
+                assets.update(comment_id=entity_id)
+            except IntegrityError:
+                pass
+
+        elif entity_type == FileAsset.EntityTypeContext.PAGE_DESCRIPTION:
+            assets.update(page_id=entity_id)
+
+        elif entity_type == FileAsset.EntityTypeContext.DRAFT_ISSUE_DESCRIPTION:
+            try:
+                assets.update(draft_issue_id=entity_id)
+            except IntegrityError:
+                pass
+
     @allow_permission([ROLE.ADMIN, ROLE.MEMBER, ROLE.GUEST])
     def post(self, request, slug, project_id, entity_id):
         asset_ids = request.data.get("asset_ids", [])
 
-        # Check if the asset ids are provided
         if not asset_ids:
-            return Response({"error": "No asset ids provided."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "No asset ids provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        # Scope to the requester's own uploads in this workspace, limited to assets that are
-        # either unassociated or already in this project. This endpoint *associates*
-        # freshly-uploaded assets, which are not yet project-scoped (e.g. a cover uploaded
-        # during project creation has project_id=NULL until this call sets it) — so the
-        # earlier project_id=project_id filter 404'd that flow. created_by + the
-        # unassociated-or-same-project bound prevent cross-project/user IDOR (a caller can
-        # only touch their own uploads, cannot move an asset in from another project, and
-        # @allow_permission already scopes them to this project).
         assets = FileAsset.objects.filter(
             id__in=asset_ids,
             workspace__slug=slug,
             created_by=request.user,
         ).filter(Q(project_id=project_id) | Q(project_id__isnull=True))
 
-        # Get the first asset
         asset = assets.first()
 
         if not asset:
@@ -732,40 +753,14 @@ class ProjectBulkAssetEndpoint(BaseAPIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Check if the asset is uploaded
-        if asset.entity_type == FileAsset.EntityTypeContext.PROJECT_COVER:
-            assets.update(project_id=project_id)
-            [self.save_project_cover(asset, project_id) for asset in assets]
-
-        if asset.entity_type == FileAsset.EntityTypeContext.ISSUE_DESCRIPTION:
-            # For some cases, the bulk api is called after the issue is deleted creating
-            # an integrity error
-            try:
-                assets.update(issue_id=entity_id, project_id=project_id)
-            except IntegrityError:
-                pass
-
-        if asset.entity_type == FileAsset.EntityTypeContext.COMMENT_DESCRIPTION:
-            # For some cases, the bulk api is called after the comment is deleted
-            # creating an integrity error
-            try:
-                assets.update(comment_id=entity_id)
-            except IntegrityError:
-                pass
-
-        if asset.entity_type == FileAsset.EntityTypeContext.PAGE_DESCRIPTION:
-            assets.update(page_id=entity_id)
-
-        if asset.entity_type == FileAsset.EntityTypeContext.DRAFT_ISSUE_DESCRIPTION:
-            # For some cases, the bulk api is called after the draft issue is deleted
-            # creating an integrity error
-            try:
-                assets.update(draft_issue_id=entity_id)
-            except IntegrityError:
-                pass
+        self.update_asset_entity(
+            assets=assets,
+            entity_type=asset.entity_type,
+            entity_id=entity_id,
+            project_id=project_id,
+        )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
-
 
 class AssetCheckEndpoint(BaseAPIView):
     """Endpoint to check if an asset exists."""
