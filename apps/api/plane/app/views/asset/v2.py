@@ -204,36 +204,23 @@ class WorkspaceFileAssetEndpoint(BaseAPIView):
     """This endpoint is used to upload cover images/logos etc for workspace, projects and users."""
 
     def get_entity_id_field(self, entity_type, entity_id):
-        # Workspace Logo
-        if entity_type == FileAsset.EntityTypeContext.WORKSPACE_LOGO:
-            return {"workspace_id": entity_id}
+        entity_fields = {
+            FileAsset.EntityTypeContext.WORKSPACE_LOGO: "workspace_id",
+            FileAsset.EntityTypeContext.PROJECT_COVER: "project_id",
+            FileAsset.EntityTypeContext.USER_AVATAR: "user_id",
+            FileAsset.EntityTypeContext.USER_COVER: "user_id",
+            FileAsset.EntityTypeContext.ISSUE_ATTACHMENT: "issue_id",
+            FileAsset.EntityTypeContext.ISSUE_DESCRIPTION: "issue_id",
+            FileAsset.EntityTypeContext.PAGE_DESCRIPTION: "page_id",
+            FileAsset.EntityTypeContext.COMMENT_DESCRIPTION: "comment_id",
+        }
 
-        # Project Cover
-        if entity_type == FileAsset.EntityTypeContext.PROJECT_COVER:
-            return {"project_id": entity_id}
+        field = entity_fields.get(entity_type)
 
-        # User Avatar and Cover
-        if entity_type in [
-            FileAsset.EntityTypeContext.USER_AVATAR,
-            FileAsset.EntityTypeContext.USER_COVER,
-        ]:
-            return {"user_id": entity_id}
+        if field is None:
+            return {}
 
-        # Issue Attachment and Description
-        if entity_type in [
-            FileAsset.EntityTypeContext.ISSUE_ATTACHMENT,
-            FileAsset.EntityTypeContext.ISSUE_DESCRIPTION,
-        ]:
-            return {"issue_id": entity_id}
-
-        # Page Description
-        if entity_type == FileAsset.EntityTypeContext.PAGE_DESCRIPTION:
-            return {"page_id": entity_id}
-
-        # Comment Description
-        if entity_type == FileAsset.EntityTypeContext.COMMENT_DESCRIPTION:
-            return {"comment_id": entity_id}
-        return {}
+        return {field: entity_id}
 
     def asset_delete(self, asset_id):
         asset = FileAsset.objects.filter(id=asset_id).first()
@@ -795,31 +782,23 @@ class DuplicateAssetEndpoint(BaseAPIView):
     throttle_classes = [AssetRateThrottle]
 
     def get_entity_id_field(self, entity_type, entity_id):
-        if entity_type == FileAsset.EntityTypeContext.WORKSPACE_LOGO:
-            return {"workspace_id": entity_id}
+        entity_fields = {
+            FileAsset.EntityTypeContext.WORKSPACE_LOGO: "workspace_id",
+            FileAsset.EntityTypeContext.PROJECT_COVER: "project_id",
+            FileAsset.EntityTypeContext.USER_AVATAR: "user_id",
+            FileAsset.EntityTypeContext.USER_COVER: "user_id",
+            FileAsset.EntityTypeContext.ISSUE_ATTACHMENT: "issue_id",
+            FileAsset.EntityTypeContext.ISSUE_DESCRIPTION: "issue_id",
+            FileAsset.EntityTypeContext.PAGE_DESCRIPTION: "page_id",
+            FileAsset.EntityTypeContext.COMMENT_DESCRIPTION: "comment_id",
+        }
 
-        if entity_type == FileAsset.EntityTypeContext.PROJECT_COVER:
-            return {"project_id": entity_id}
+        field = entity_fields.get(entity_type)
 
-        if entity_type in [
-            FileAsset.EntityTypeContext.USER_AVATAR,
-            FileAsset.EntityTypeContext.USER_COVER,
-        ]:
-            return {"user_id": entity_id}
+        if field is None:
+            return {}
 
-        if entity_type in [
-            FileAsset.EntityTypeContext.ISSUE_ATTACHMENT,
-            FileAsset.EntityTypeContext.ISSUE_DESCRIPTION,
-        ]:
-            return {"issue_id": entity_id}
-
-        if entity_type == FileAsset.EntityTypeContext.PAGE_DESCRIPTION:
-            return {"page_id": entity_id}
-
-        if entity_type == FileAsset.EntityTypeContext.COMMENT_DESCRIPTION:
-            return {"comment_id": entity_id}
-
-        return {}
+        return {field: entity_id}
 
     def validate_entity_type(self, entity_type):
         if not entity_type or entity_type not in FileAsset.EntityTypeContext.values:
