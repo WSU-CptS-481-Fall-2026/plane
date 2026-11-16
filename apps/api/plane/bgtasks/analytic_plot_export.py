@@ -256,11 +256,7 @@ def generate_segmented_rows(
     y_axis,
     segment,
     key,
-    assignee_details,
-    label_details,
-    state_details,
-    cycle_details,
-    module_details,
+    details_by_dimension,
 ):
     segment_values = get_segment_values(distribution)
 
@@ -268,14 +264,6 @@ def generate_segmented_rows(
         row_mapping.get(x_axis, "X-Axis"),
         row_mapping.get(y_axis, "Y-Axis"),
     ] + segment_values
-
-    details_by_dimension = {
-        ASSIGNEE_ID: assignee_details,
-        LABEL_ID: label_details,
-        STATE_ID: state_details,
-        CYCLE_ID: cycle_details,
-        MODULE_ID: module_details,
-    }
 
     rows = generate_segment_data_rows(distribution, segment_values, key)
 
@@ -291,7 +279,7 @@ def generate_segmented_rows(
     for index, segment_value in enumerate(row_zero[2:]):
         if segment == MODULE_ID:
             detail = next(
-                (mod for mod in label_details if str(mod[MODULE_ID]) == str(segment_value)),
+                (mod for mod in details_by_dimension[MODULE_ID] if str(mod[MODULE_ID]) == str(segment_value)),
                 None,
             )
             if detail:
@@ -303,27 +291,14 @@ def generate_segmented_rows(
 
     return [tuple(row_zero)] + rows
 
-
 # Make the CSV rows for non-segmented analytics.
 def generate_non_segmented_rows(
     distribution,
     x_axis,
     y_axis,
     key,
-    assignee_details,
-    label_details,
-    state_details,
-    cycle_details,
-    module_details,
+    details_by_dimension,
 ):
-    details_by_dimension = {
-        ASSIGNEE_ID: assignee_details,
-        LABEL_ID: label_details,
-        STATE_ID: state_details,
-        CYCLE_ID: cycle_details,
-        MODULE_ID: module_details,
-    }
-
     rows = []
 
     for item, data in distribution.items():
@@ -339,6 +314,25 @@ def generate_non_segmented_rows(
 
     return [header] + rows
 
+# Get the details for the selected analytics dimensions.
+def get_analytics_dimension_details(slug, filters, x_axis, segment):
+    detail_functions = {
+        ASSIGNEE_ID: get_assignee_details,
+        LABEL_ID: get_label_details,
+        STATE_ID: get_state_details,
+        CYCLE_ID: get_cycle_details,
+        MODULE_ID: get_module_details,
+    }
+
+    details = {}
+
+    for dimension, get_details in detail_functions.items():
+        if x_axis == dimension or segment == dimension:
+            details[dimension] = get_details(slug, filters)
+        else:
+            details[dimension] = {}
+
+    return details
 
 @shared_task
 def analytic_export_task(email, data, slug):
@@ -353,17 +347,9 @@ def analytic_export_task(email, data, slug):
         distribution = build_graph_plot(queryset, x_axis=x_axis, y_axis=y_axis, segment=segment)
         key = "count" if y_axis == "issue_count" else "estimate"
 
-        assignee_details = (
-            get_assignee_details(slug, filters) if x_axis == ASSIGNEE_ID or segment == ASSIGNEE_ID else {}
+        details_by_dimension = get_analytics_dimension_details(
+            slug, filters, x_axis, segment
         )
-
-        label_details = get_label_details(slug, filters) if x_axis == LABEL_ID or segment == LABEL_ID else {}
-
-        state_details = get_state_details(slug, filters) if x_axis == STATE_ID or segment == STATE_ID else {}
-
-        cycle_details = get_cycle_details(slug, filters) if x_axis == CYCLE_ID or segment == CYCLE_ID else {}
-
-        module_details = get_module_details(slug, filters) if x_axis == MODULE_ID or segment == MODULE_ID else {}
 
         if segment:
             rows = generate_segmented_rows(
@@ -372,11 +358,7 @@ def analytic_export_task(email, data, slug):
                 y_axis,
                 segment,
                 key,
-                assignee_details,
-                label_details,
-                state_details,
-                cycle_details,
-                module_details,
+                details_by_dimension,
             )
         else:
             rows = generate_non_segmented_rows(
@@ -384,13 +366,9 @@ def analytic_export_task(email, data, slug):
                 x_axis,
                 y_axis,
                 key,
-                assignee_details,
-                label_details,
-                state_details,
-                cycle_details,
-                module_details,
+                details_by_dimension,
             )
-
+            
         csv_buffer = generate_csv_from_rows(rows)
         send_export_email(email, slug, csv_buffer, rows)
         logging.getLogger("plane.worker").info("Email sent successfully.")

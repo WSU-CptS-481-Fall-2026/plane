@@ -61,16 +61,20 @@ from plane.bgtasks.analytic_plot_export import (
 )
 # Tests that IDs are converted into readable names in nonsegmented rows.
 def test_NonSegmentedRowsResolveDisplayNames(x_axis, details, expected):
+    details_by_dimension = {
+        ASSIGNEE_ID: details if x_axis == ASSIGNEE_ID else [],
+        LABEL_ID: details if x_axis == LABEL_ID else [],
+        STATE_ID: details if x_axis == STATE_ID else [],
+        CYCLE_ID: details if x_axis == CYCLE_ID else [],
+        MODULE_ID: details if x_axis == MODULE_ID else [],
+    }
+
     rows = generate_non_segmented_rows(
         distribution={"1": [{"count": 5, "estimate": 10}]},
         x_axis=x_axis,
         y_axis="issue_count",
         key="count",
-        assignee_details=details if x_axis == ASSIGNEE_ID else [],
-        label_details=details if x_axis == LABEL_ID else [],
-        state_details=details if x_axis == STATE_ID else [],
-        cycle_details=details if x_axis == CYCLE_ID else [],
-        module_details=details if x_axis == MODULE_ID else [],
+        details_by_dimension=details_by_dimension,
     )
 
     assert rows[1][0] == expected
@@ -84,11 +88,7 @@ def test_NonSegmentedRowsReturnsCorrectHeaders():
         x_axis="state__name",
         y_axis="issue_count",
         key="count",
-        assignee_details=[],
-        label_details=[],
-        state_details=[],
-        cycle_details=[],
-        module_details=[],
+        details_by_dimension={},
     )
 
     assert rows[0] == ("State", "Issue Count")
@@ -102,11 +102,7 @@ def test_NonSegmentedRowsUsesEstimateForEstimateAxis():
         x_axis="state__name",
         y_axis="estimate",
         key="estimate",
-        assignee_details=[],
-        label_details=[],
-        state_details=[],
-        cycle_details=[],
-        module_details=[],
+        details_by_dimension={},
     )
 
     assert rows[1] == ("Open", 12)
@@ -125,11 +121,7 @@ def test_SegmentedRowsGeneratesTotalsAndSegmentValues():
         y_axis="issue_count",
         segment=LABEL_ID,
         key="count",
-        assignee_details=[],
-        label_details=[],
-        state_details=[],
-        cycle_details=[],
-        module_details=[],
+        details_by_dimension={LABEL_ID: []},
     )
 
     header = rows[0]
@@ -152,11 +144,10 @@ def test_SegmentedRowsResolvesXAxisDisplayName():
         y_axis="issue_count",
         segment=STATE_ID,
         key="count",
-        assignee_details=[],
-        label_details=[{LABEL_ID: "1", "labels__name": "Bug"}],
-        state_details=[],
-        cycle_details=[],
-        module_details=[],
+        details_by_dimension={
+            LABEL_ID: [{LABEL_ID: "1", "labels__name": "Bug"}],
+            STATE_ID: [],
+        },
     )
 
     assert rows[1][0] == "Bug"
