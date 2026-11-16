@@ -184,7 +184,72 @@ def generate_csv_from_rows(rows):
     [writer.writerow(sanitize_csv_row(row)) for row in rows]
     return csv_buffer
 
+# Get the unique segment values.
+def get_segment_values(distribution):
+    return list(
+        set(
+            item.get("segment")
+            for sublist in distribution.values()
+            for item in sublist
+        )
+    )
 
+
+# Make the data rows with totals and segment values.
+def generate_segment_data_rows(distribution, segment_values, key):
+    rows = []
+
+    for item, data in distribution.items():
+        generated_row = [
+            item,
+            sum(obj.get(key) for obj in data if obj.get(key) is not None),
+        ]
+
+        for segment_value in segment_values:
+            value = next(
+                (
+                    entry.get(key)
+                    for entry in data
+                    if entry.get("segment") == segment_value
+                ),
+                "0",
+            )
+            generated_row.append(value)
+
+        rows.append(tuple(generated_row))
+
+    return rows
+
+
+# Get the display name for the selected ID.
+def resolve_display_name(item, dimension, details):
+    dimension_fields = {
+        LABEL_ID: (LABEL_ID, "labels__name"),
+        STATE_ID: (STATE_ID, "state__name"),
+        CYCLE_ID: (CYCLE_ID, "issue_cycle__cycle__name"),
+        MODULE_ID: (MODULE_ID, "issue_module__module__name"),
+    }
+
+    if dimension == ASSIGNEE_ID:
+        detail = next(
+            (user for user in details if str(user[ASSIGNEE_ID]) == str(item)),
+            None,
+        )
+        if detail:
+            return f"{detail['assignees__first_name']} {detail['assignees__last_name']}"
+
+    elif dimension in dimension_fields:
+        id_field, name_field = dimension_fields[dimension]
+        detail = next(
+            (entry for entry in details if str(entry[id_field]) == str(item)),
+            None,
+        )
+        if detail:
+            return detail[name_field]
+
+    return item
+
+# Make the CSV rows for segmented analytics.
 def generate_segmented_rows(
     distribution,
     x_axis,
@@ -197,99 +262,49 @@ def generate_segmented_rows(
     cycle_details,
     module_details,
 ):
-    segment_zero = list(set(item.get("segment") for sublist in distribution.values() for item in sublist))
-
-    segmented = segment
+    segment_values = get_segment_values(distribution)
 
     row_zero = [
         row_mapping.get(x_axis, "X-Axis"),
         row_mapping.get(y_axis, "Y-Axis"),
-    ] + segment_zero
+    ] + segment_values
 
-    rows = []
-    for item, data in distribution.items():
-        generated_row = [
-            item,
-            sum(obj.get(key) for obj in data if obj.get(key) is not None),
-        ]
+    details_by_dimension = {
+        ASSIGNEE_ID: assignee_details,
+        LABEL_ID: label_details,
+        STATE_ID: state_details,
+        CYCLE_ID: cycle_details,
+        MODULE_ID: module_details,
+    }
 
-        for segment in segment_zero:
-            value = next((x.get(key) for x in data if x.get("segment") == segment), "0")
-            generated_row.append(value)
+    rows = generate_segment_data_rows(distribution, segment_values, key)
 
-        if x_axis == ASSIGNEE_ID:
-            assignee = next(
-                (user for user in assignee_details if str(user[ASSIGNEE_ID]) == str(item)),
+    x_axis_details = details_by_dimension.get(x_axis, [])
+    rows = [
+        (
+            resolve_display_name(row[0], x_axis, x_axis_details),
+            *row[1:],
+        )
+        for row in rows
+    ]
+
+    for index, segment_value in enumerate(row_zero[2:]):
+        if segment == MODULE_ID:
+            detail = next(
+                (mod for mod in label_details if str(mod[MODULE_ID]) == str(segment_value)),
                 None,
             )
-            if assignee:
-                generated_row[0] = f"{assignee['assignees__first_name']} {assignee['assignees__last_name']}"
-
-        if x_axis == LABEL_ID:
-            label = next((lab for lab in label_details if str(lab[LABEL_ID]) == str(item)), None)
-
-            if label:
-                generated_row[0] = f"{label['labels__name']}"
-
-        if x_axis == STATE_ID:
-            state = next((sta for sta in state_details if str(sta[STATE_ID]) == str(item)), None)
-
-            if state:
-                generated_row[0] = f"{state['state__name']}"
-
-        if x_axis == CYCLE_ID:
-            cycle = next((cyc for cyc in cycle_details if str(cyc[CYCLE_ID]) == str(item)), None)
-
-            if cycle:
-                generated_row[0] = f"{cycle['issue_cycle__cycle__name']}"
-
-        if x_axis == MODULE_ID:
-            module = next(
-                (mod for mod in module_details if str(mod[MODULE_ID]) == str(item)),
-                None,
+            if detail:
+                row_zero[index + 2] = detail["issue_module__module__name"]
+        else:
+            row_zero[index + 2] = resolve_display_name(
+                segment_value, segment, details_by_dimension.get(segment, [])
             )
-
-            if module:
-                generated_row[0] = f"{module['issue_module__module__name']}"
-
-        rows.append(tuple(generated_row))
-
-    if segmented == ASSIGNEE_ID:
-        for index, segm in enumerate(row_zero[2:]):
-            assignee = next(
-                (user for user in assignee_details if str(user[ASSIGNEE_ID]) == str(segm)),
-                None,
-            )
-            if assignee:
-                row_zero[index + 2] = f"{assignee['assignees__first_name']} {assignee['assignees__last_name']}"
-
-    if segmented == LABEL_ID:
-        for index, segm in enumerate(row_zero[2:]):
-            label = next((lab for lab in label_details if str(lab[LABEL_ID]) == str(segm)), None)
-            if label:
-                row_zero[index + 2] = label["labels__name"]
-
-    if segmented == STATE_ID:
-        for index, segm in enumerate(row_zero[2:]):
-            state = next((sta for sta in state_details if str(sta[STATE_ID]) == str(segm)), None)
-            if state:
-                row_zero[index + 2] = state["state__name"]
-
-    if segmented == MODULE_ID:
-        for index, segm in enumerate(row_zero[2:]):
-            module = next((mod for mod in label_details if str(mod[MODULE_ID]) == str(segm)), None)
-            if module:
-                row_zero[index + 2] = module["issue_module__module__name"]
-
-    if segmented == CYCLE_ID:
-        for index, segm in enumerate(row_zero[2:]):
-            cycle = next((cyc for cyc in cycle_details if str(cyc[CYCLE_ID]) == str(segm)), None)
-            if cycle:
-                row_zero[index + 2] = cycle["issue_cycle__cycle__name"]
 
     return [tuple(row_zero)] + rows
 
 
+# Make the CSV rows for non-segmented analytics.
 def generate_non_segmented_rows(
     distribution,
     x_axis,
@@ -301,49 +316,28 @@ def generate_non_segmented_rows(
     cycle_details,
     module_details,
 ):
+    details_by_dimension = {
+        ASSIGNEE_ID: assignee_details,
+        LABEL_ID: label_details,
+        STATE_ID: state_details,
+        CYCLE_ID: cycle_details,
+        MODULE_ID: module_details,
+    }
+
     rows = []
+
     for item, data in distribution.items():
-        row = [item, data[0].get("count" if y_axis == "issue_count" else "estimate")]
+        display_name = resolve_display_name(
+            item, x_axis, details_by_dimension.get(x_axis, [])
+        )
+        rows.append((display_name, data[0].get(key)))
 
-        if x_axis == ASSIGNEE_ID:
-            assignee = next(
-                (user for user in assignee_details if str(user[ASSIGNEE_ID]) == str(item)),
-                None,
-            )
-            if assignee:
-                row[0] = f"{assignee['assignees__first_name']} {assignee['assignees__last_name']}"
+    header = (
+        row_mapping.get(x_axis, "X-Axis"),
+        row_mapping.get(y_axis, "Y-Axis"),
+    )
 
-        if x_axis == LABEL_ID:
-            label = next((lab for lab in label_details if str(lab[LABEL_ID]) == str(item)), None)
-
-            if label:
-                row[0] = f"{label['labels__name']}"
-
-        if x_axis == STATE_ID:
-            state = next((sta for sta in state_details if str(sta[STATE_ID]) == str(item)), None)
-
-            if state:
-                row[0] = f"{state['state__name']}"
-
-        if x_axis == CYCLE_ID:
-            cycle = next((cyc for cyc in cycle_details if str(cyc[CYCLE_ID]) == str(item)), None)
-
-            if cycle:
-                row[0] = f"{cycle['issue_cycle__cycle__name']}"
-
-        if x_axis == MODULE_ID:
-            module = next(
-                (mod for mod in module_details if str(mod[MODULE_ID]) == str(item)),
-                None,
-            )
-
-            if module:
-                row[0] = f"{module['issue_module__module__name']}"
-
-        rows.append(tuple(row))
-
-    row_zero = [row_mapping.get(x_axis, "X-Axis"), row_mapping.get(y_axis, "Y-Axis")]
-    return [tuple(row_zero)] + rows
+    return [header] + rows
 
 
 @shared_task
